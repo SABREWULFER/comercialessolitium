@@ -159,8 +159,9 @@ export default function Home() {
             />
           )}
 
-          {activeTab === 'dc-team' && (currentUser.role === 'director_comercial' || currentUser.role === 'admin') && (
+          {activeTab === 'dc-team' && (currentUser.role === 'director_comercial' || currentUser.role === 'admin' || currentUser.role === 'director_territorial') && (
             <DCTeamTargets
+              currentUser={currentUser}
               fiscalYear={fiscalYear}
               onRefresh={loadUserData}
             />

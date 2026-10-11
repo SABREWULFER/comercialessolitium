@@ -14,20 +14,24 @@ import {
   Sparkles,
   Zap
 } from 'lucide-react';
-import { GroupTarget, CommercialUser, BusinessLineId, BUSINESS_LINES } from '@/types';
+import { GroupTarget, CommercialUser, BusinessLineId, BUSINESS_LINES, CommercialGroup } from '@/types';
 import { DEMO_USERS } from '@/lib/constants';
-import { getGroupTarget, saveGroupTarget, getCommercialQuotas, saveCommercialQuotas, getAllUsers } from '@/lib/storage';
+import { getGroupTarget, saveGroupTarget, getCommercialQuotas, saveCommercialQuotas, getAllUsers, getCommercialGroups } from '@/lib/storage';
 import { calculateDCBonus } from '@/lib/calculations';
 
 interface DCTeamTargetsProps {
+  currentUser: CommercialUser;
   fiscalYear: string;
   onRefresh: () => void;
 }
 
 export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
+  currentUser,
   fiscalYear,
   onRefresh,
 }) => {
+  const [groups, setGroups] = useState<CommercialGroup[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState<string>('');
   const [groupTarget, setGroupTarget] = useState<GroupTarget | null>(null);
   const [teamQuotas, setTeamQuotas] = useState<Record<string, Record<BusinessLineId, number>>>({});
   const [selectedUserForEdit, setSelectedUserForEdit] = useState<CommercialUser | null>(null);
@@ -41,23 +45,48 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
 
   useEffect(() => {
     loadData();
-  }, [fiscalYear]);
+  }, [fiscalYear, currentUser.id, currentUser.group_id]);
 
-  const loadData = async () => {
+  const loadData = async (overrideGroupId?: string) => {
     setLoading(true);
     try {
-      const gt = await getGroupTarget('grp-1', fiscalYear);
-      setGroupTarget(gt);
+      const allGroups = await getCommercialGroups();
+      setGroups(allGroups);
 
-      const all = await getAllUsers();
-      const commercials = all.filter(u => u.role === 'comercial');
-      setTeamMembers(commercials);
-
-      const qMap: Record<string, Record<BusinessLineId, number>> = {};
-      for (const m of commercials) {
-        qMap[m.id] = await getCommercialQuotas(m.id, fiscalYear);
+      // Determinar qué grupo mostrar según rol
+      let targetGroupId = overrideGroupId || selectedGroupId;
+      if (!targetGroupId) {
+        if (currentUser.role === 'director_comercial') {
+          // El Director Comercial ve ÚNICAMENTE su grupo asignado
+          const myGroup = allGroups.find(g => g.director_commercial_id === currentUser.id || g.id === currentUser.group_id);
+          targetGroupId = myGroup ? myGroup.id : (currentUser.group_id || allGroups[0]?.id || '');
+        } else {
+          // Admin o Director Territorial
+          targetGroupId = currentUser.group_id || allGroups[0]?.id || '';
+        }
       }
-      setTeamQuotas(qMap);
+
+      setSelectedGroupId(targetGroupId);
+
+      if (targetGroupId) {
+        const gt = await getGroupTarget(targetGroupId, fiscalYear);
+        const groupObj = allGroups.find(g => g.id === targetGroupId);
+        if (groupObj && gt) {
+          gt.group_name = groupObj.name;
+        }
+        setGroupTarget(gt);
+
+        const all = await getAllUsers();
+        // Filtrar estrictamente solo comerciales asignados al grupo activo
+        const commercials = all.filter(u => u.role === 'comercial' && u.group_id === targetGroupId);
+        setTeamMembers(commercials);
+
+        const qMap: Record<string, Record<BusinessLineId, number>> = {};
+        for (const m of commercials) {
+          qMap[m.id] = await getCommercialQuotas(m.id, fiscalYear);
+        }
+        setTeamQuotas(qMap);
+      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -71,7 +100,11 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
     if (!groupTarget) return;
     setSavingTarget(true);
     try {
-      await saveGroupTarget(groupTarget);
+      await saveGroupTarget({
+        ...groupTarget,
+        group_id: selectedGroupId || groupTarget.group_id,
+        dc_user_id: currentUser.id,
+      });
       setNotification('¡Objetivos y métricas del Director Comercial guardados con éxito!');
       onRefresh();
       setTimeout(() => setNotification(null), 3000);
@@ -118,6 +151,8 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
   const dcExtra = groupTarget?.dc_extra_quota || 0;
   const totalGroupTargetCalculated = individualSumCurrency + dcExtra;
 
+  const activeGroupName = groups.find(g => g.id === selectedGroupId)?.name || groupTarget?.group_name || 'Equipo Comercial';
+
   // Simulación de cálculo de bono del DC para vista previa
   const dcBonusPreview = groupTarget ? calculateDCBonus(
     groupTarget,
@@ -151,11 +186,14 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
       {/* Header Panel DC */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[11px] bg-purple-100 text-purple-700 font-bold px-2 py-0.5 rounded uppercase">
               Dirección Comercial
             </span>
             <span className="text-xs text-slate-500 font-medium">Ejercicio {fiscalYear}</span>
+            <span className="text-xs font-bold text-slate-800 bg-slate-100 px-2.5 py-0.5 rounded border border-slate-200">
+              {activeGroupName}
+            </span>
           </div>
           <h2 className="text-xl font-bold text-slate-900 mt-1 flex items-center gap-2">
             <Users className="w-5 h-5 text-purple-600" />
@@ -165,6 +203,25 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
             Supervisa y edita las cuotas de cada comercial, y define las métricas estratégicas del grupo.
           </p>
         </div>
+
+        {/* Selector de Grupo para Administrador / Director Territorial */}
+        {(currentUser.role === 'admin' || currentUser.role === 'director_territorial') && groups.length > 0 && (
+          <div className="flex items-center gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+            <label className="text-xs font-bold text-slate-700 shrink-0">Equipo / Zona:</label>
+            <select
+              value={selectedGroupId}
+              onChange={(e) => {
+                setSelectedGroupId(e.target.value);
+                loadData(e.target.value);
+              }}
+              className="text-xs font-semibold bg-white border border-slate-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-solitium-500"
+            >
+              {groups.map(g => (
+                <option key={g.id} value={g.id}>{g.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {/* Resumen Automático del Objetivo Grupal */}
         <div className="bg-slate-900 text-white p-4 rounded-xl flex items-center gap-6">
@@ -186,7 +243,7 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
         <div className="p-5 border-b border-slate-200 bg-slate-50/70 flex items-center justify-between">
           <div>
             <h3 className="text-sm font-bold text-slate-900">
-              Comerciales Asignados al Grupo ({teamMembers.length})
+              Comerciales Asignados a {activeGroupName} ({teamMembers.length})
             </h3>
             <p className="text-xs text-slate-500">
               Haz clic en "Editar Cuotas" para ajustar los objetivos individuales de cualquier vendedor en Supabase.
@@ -209,44 +266,52 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 font-medium text-slate-600">
-              {teamMembers.map(member => {
-                const q = teamQuotas[member.id] || {};
-                const totalComm = BUSINESS_LINES
-                  .filter(b => b.isCurrency)
-                  .reduce((sum, b) => sum + (q[b.id] || 0), 0);
+              {teamMembers.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="p-8 text-center text-slate-400 font-medium">
+                    No hay comerciales asignados a este equipo en este momento.
+                  </td>
+                </tr>
+              ) : (
+                teamMembers.map(member => {
+                  const q = teamQuotas[member.id] || {};
+                  const totalComm = BUSINESS_LINES
+                    .filter(b => b.isCurrency)
+                    .reduce((sum, b) => sum + (q[b.id] || 0), 0);
 
-                return (
-                  <tr key={member.id} className="hover:bg-slate-50/80">
-                    <td className="p-3.5">
-                      <div className="font-bold text-slate-900">{member.name}</div>
-                      <div className="text-[11px] text-slate-400">{member.email}</div>
-                    </td>
-                    <td className="p-3.5">
-                      <span className="bg-blue-50 text-blue-700 font-mono font-bold px-2 py-0.5 rounded">
-                        {member.vendor_code}
-                      </span>
-                    </td>
-                    <td className="p-3.5">{(q['OFI'] || 0).toLocaleString('es-ES')} €</td>
-                    <td className="p-3.5">{(q['SISTEMAS'] || 0).toLocaleString('es-ES')} €</td>
-                    <td className="p-3.5">{(q['DW'] || 0).toLocaleString('es-ES')} €</td>
-                    <td className="p-3.5 font-bold text-slate-900">
-                      {totalComm.toLocaleString('es-ES')} €
-                    </td>
-                    <td className="p-3.5 text-emerald-700 font-bold">
-                      {q['SAGE_CLIENTS'] || 0} clientes
-                    </td>
-                    <td className="p-3.5 text-right">
-                      <button
-                        onClick={() => handleOpenEditUser(member)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-solitium-50 hover:bg-solitium-100 text-solitium-600 font-bold rounded-lg transition-colors border border-solitium-200"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                        <span>Editar Cuotas</span>
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+                  return (
+                    <tr key={member.id} className="hover:bg-slate-50/80">
+                      <td className="p-3.5">
+                        <div className="font-bold text-slate-900">{member.name}</div>
+                        <div className="text-[11px] text-slate-400">{member.email}</div>
+                      </td>
+                      <td className="p-3.5">
+                        <span className="bg-blue-50 text-blue-700 font-mono font-bold px-2 py-0.5 rounded">
+                          {member.vendor_code}
+                        </span>
+                      </td>
+                      <td className="p-3.5">{(q['OFI'] || 0).toLocaleString('es-ES')} €</td>
+                      <td className="p-3.5">{(q['SISTEMAS'] || 0).toLocaleString('es-ES')} €</td>
+                      <td className="p-3.5">{(q['DW'] || 0).toLocaleString('es-ES')} €</td>
+                      <td className="p-3.5 font-bold text-slate-900">
+                        {totalComm.toLocaleString('es-ES')} €
+                      </td>
+                      <td className="p-3.5 text-emerald-700 font-bold">
+                        {q['SAGE_CLIENTS'] || 0} clientes
+                      </td>
+                      <td className="p-3.5 text-right">
+                        <button
+                          onClick={() => handleOpenEditUser(member)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-solitium-50 hover:bg-solitium-100 text-solitium-600 font-bold rounded-lg transition-colors border border-solitium-200"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span>Editar Cuotas</span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>

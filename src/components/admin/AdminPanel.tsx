@@ -29,6 +29,7 @@ import {
   deleteUser, 
   getCommercialGroups, 
   saveCommercialGroup, 
+  deleteCommercialGroup,
   initializeDefaultGroups,
   generateUUID 
 } from '@/lib/storage';
@@ -245,6 +246,17 @@ export const AdminPanel: React.FC = () => {
       });
 
       if (result.success) {
+        // Si se asignó un director comercial a este grupo, asegurar que su perfil tenga este group_id
+        if (groupFormData.director_commercial_id) {
+          const dcUser = users.find(u => u.id === groupFormData.director_commercial_id);
+          if (dcUser && dcUser.group_id !== groupFormData.id) {
+            await saveUser({
+              ...dcUser,
+              group_id: groupFormData.id,
+            });
+          }
+        }
+
         setNotification({
           type: 'success',
           message: editingGroup ? 'Zona/Grupo territorial actualizado en Supabase (commercial_groups).' : 'Nueva Zona/Grupo guardada con éxito en Supabase.',
@@ -261,6 +273,23 @@ export const AdminPanel: React.FC = () => {
       setNotification({ type: 'error', message: `Excepción: ${err.message}` });
     }
     setTimeout(() => setNotification(null), 5000);
+  };
+
+  const handleDeleteGroup = async (groupId: string, groupName: string) => {
+    if (confirm(`¿Estás seguro de que deseas eliminar permanentemente la zona "${groupName}"?`)) {
+      try {
+        const result = await deleteCommercialGroup(groupId);
+        if (result.success) {
+          setNotification({ type: 'success', message: `Zona "${groupName}" eliminada correctamente.` });
+          await loadData();
+        } else {
+          setNotification({ type: 'error', message: `Error al eliminar grupo: ${result.error || 'Error desconocido'}` });
+        }
+      } catch (err: any) {
+        setNotification({ type: 'error', message: err.message });
+      }
+      setTimeout(() => setNotification(null), 4000);
+    }
   };
 
   const handleInitializeDefaultGroups = async () => {
@@ -571,13 +600,21 @@ export const AdminPanel: React.FC = () => {
                           {linkedComercials.length} integrantes
                         </span>
                       </td>
-                      <td className="p-4 text-right">
+                      <td className="p-4 text-right space-x-2">
                         <button
                           onClick={() => handleOpenEditGroup(g)}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-solitium-50 hover:bg-solitium-100 text-solitium-600 font-bold rounded-lg border border-solitium-200 transition-colors"
+                          title="Editar Zona"
                         >
                           <Edit2 className="w-3.5 h-3.5" />
-                          <span>Editar Zona</span>
+                          <span>Editar</span>
+                        </button>
+                        <button
+                          onClick={() => handleDeleteGroup(g.id, g.name)}
+                          className="inline-flex items-center p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors border border-transparent hover:border-rose-200"
+                          title="Eliminar Zona"
+                        >
+                          <Trash2 className="w-4 h-4" />
                         </button>
                       </td>
                     </tr>

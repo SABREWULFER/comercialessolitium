@@ -64,8 +64,10 @@ export async function getCommercialGroups(): Promise<CommercialGroup[]> {
         .order('name');
 
       if (!error && data && data.length > 0) {
-        setLocalData(LOCAL_STORAGE_GROUPS_KEY, data);
-        return data as CommercialGroup[];
+        // Ignorar grupos huérfanos obsoletos de prueba sin agentes asignados
+        const cleaned = data.filter(g => g.id !== '11111111-1111-1111-1111-111111111111' || g.name !== 'Grupo 1 - Aragón y Madrid');
+        setLocalData(LOCAL_STORAGE_GROUPS_KEY, cleaned.length > 0 ? cleaned : data);
+        return (cleaned.length > 0 ? cleaned : data) as CommercialGroup[];
       }
     } catch (err) {
       console.warn('Error al consultar commercial_groups en Supabase, usando fallback', err);
@@ -78,6 +80,29 @@ export async function getCommercialGroups(): Promise<CommercialGroup[]> {
     setLocalData(LOCAL_STORAGE_GROUPS_KEY, local);
   }
   return local;
+}
+
+export async function deleteCommercialGroup(groupId: string): Promise<{ success: boolean; error?: string }> {
+  const currentGroups = await getCommercialGroups();
+  const filtered = currentGroups.filter(g => g.id !== groupId);
+  setLocalData(LOCAL_STORAGE_GROUPS_KEY, filtered);
+
+  if (isSupabaseConfigured()) {
+    try {
+      const { error } = await supabase
+        .from('commercial_groups')
+        .delete()
+        .eq('id', groupId);
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  return { success: true };
 }
 
 export async function saveCommercialGroup(group: Partial<CommercialGroup> & { name: string }): Promise<{ success: boolean; group?: CommercialGroup; error?: string }> {
