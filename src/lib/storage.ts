@@ -1,7 +1,16 @@
 import { supabase, isSupabaseConfigured } from './supabase';
-import { CommercialQuota, GroupTarget, SalesRecord, BusinessLineId, BUSINESS_LINES } from '@/types';
-import { INITIAL_GROUP_TARGET } from './constants';
+import { 
+  CommercialQuota, 
+  GroupTarget, 
+  SalesRecord, 
+  BusinessLineId, 
+  BUSINESS_LINES,
+  CommercialUser,
+  COMMERCIAL_GROUPS
+} from '@/types';
+import { INITIAL_GROUP_TARGET, DEMO_USERS } from './constants';
 
+const LOCAL_STORAGE_USERS_KEY = 'solitium_profiles_users_cache';
 const LOCAL_STORAGE_QUOTAS_KEY = 'solitium_commercial_quotas_cache';
 const LOCAL_STORAGE_GROUP_TARGETS_KEY = 'solitium_group_targets_cache';
 const LOCAL_STORAGE_SALES_KEY = 'solitium_sales_records_cache';
@@ -27,8 +36,136 @@ const setLocalData = <T>(key: string, data: T): void => {
 };
 
 /**
- * Obtener las cuotas de un comercial para un año fiscal específico
+ * ==========================================
+ * GESTIÓN DE PERFILES Y USUARIOS (ADMIN)
+ * ==========================================
  */
+
+/**
+ * Obtener todos los usuarios / perfiles del sistema
+ */
+export async function getAllUsers(): Promise<CommercialUser[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .order('name');
+
+      if (!error && data && data.length > 0) {
+        return data as CommercialUser[];
+      }
+    } catch (err) {
+      console.warn('Error al consultar perfiles en Supabase, usando caché local', err);
+    }
+  }
+
+  // Fallback local con inicialización desde DEMO_USERS
+  let localUsers = getLocalData<CommercialUser[]>(LOCAL_STORAGE_USERS_KEY, []);
+  if (localUsers.length === 0) {
+    localUsers = [...DEMO_USERS];
+    setLocalData(LOCAL_STORAGE_USERS_KEY, localUsers);
+  }
+  return localUsers;
+}
+
+/**
+ * Crear o actualizar usuario / perfil
+ */
+export async function saveUser(user: CommercialUser): Promise<boolean> {
+  const users = await getAllUsers();
+  const existingIdx = users.findIndex(u => u.id === user.id || u.email.toLowerCase() === user.email.toLowerCase());
+
+  if (existingIdx >= 0) {
+    users[existingIdx] = { ...users[existingIdx], ...user };
+  } else {
+    users.push(user);
+  }
+  setLocalData(LOCAL_STORAGE_USERS_KEY, users);
+
+  if (isSupabaseConfigured()) {
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .upsert({
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          vendor_code: user.vendor_code,
+          role: user.role,
+          group_id: user.group_id,
+          is_active: user.is_active ?? true,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'id' });
+
+      if (error) {
+        console.error('Error al guardar perfil en Supabase:', error);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.error('Excepción guardando perfil en Supabase:', err);
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Dar de baja o eliminar un usuario
+ */
+export async function deleteUser(userId: string): Promise<boolean> {
+  const users = await getAllUsers();
+  const filtered = users.filter(u => u.id !== userId);
+  setLocalData(LOCAL_STORAGE_USERS_KEY, filtered);
+
+  if (isSupabaseConfigured()) {
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .delete()
+        .eq('id', userId);
+      return !error;
+    } catch (err) {
+      console.error('Error al eliminar usuario en Supabase:', err);
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Buscar perfil por email
+ */
+export async function getUserProfileByEmail(email: string): Promise<CommercialUser | null> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('email', email.trim().toLowerCase())
+        .single();
+
+      if (!error && data) {
+        return data as CommercialUser;
+      }
+    } catch (err) {
+      console.warn('Error buscando usuario por email en Supabase:', err);
+    }
+  }
+
+  const users = await getAllUsers();
+  return users.find(u => u.email.trim().toLowerCase() === email.trim().toLowerCase()) || null;
+}
+
+/**
+ * ==========================================
+ * GESTIÓN DE CUOTAS Y OBJETIVOS DINÁMICOS
+ * ==========================================
+ */
+
 export async function getCommercialQuotas(userId: string, fiscalYear: string): Promise<Record<BusinessLineId, number>> {
   const result: Record<BusinessLineId, number> = {} as any;
   BUSINESS_LINES.forEach(line => {
@@ -54,7 +191,6 @@ export async function getCommercialQuotas(userId: string, fiscalYear: string): P
     }
   }
 
-  // Fallback Local Storage
   const localList = getLocalData<CommercialQuota[]>(LOCAL_STORAGE_QUOTAS_KEY, []);
   const userQuotas = localList.filter(q => q.user_id === userId && q.fiscal_year === fiscalYear);
   userQuotas.forEach(q => {
@@ -64,9 +200,6 @@ export async function getCommercialQuotas(userId: string, fiscalYear: string): P
   return result;
 }
 
-/**
- * Guardar o actualizar cuotas de un comercial
- */
 export async function saveCommercialQuotas(
   userId: string, 
   fiscalYear: string, 
@@ -80,7 +213,6 @@ export async function saveCommercialQuotas(
     updated_at: new Date().toISOString(),
   }));
 
-  // Siempre actualizamos localmente para persistencia garantizada
   const localList = getLocalData<CommercialQuota[]>(LOCAL_STORAGE_QUOTAS_KEY, []);
   const filtered = localList.filter(q => !(q.user_id === userId && q.fiscal_year === fiscalYear));
   setLocalData(LOCAL_STORAGE_QUOTAS_KEY, [...filtered, ...recordsToUpsert]);
@@ -105,23 +237,6 @@ export async function saveCommercialQuotas(
   return true;
 }
 
-/**
- * Obtener todas las cuotas de un conjunto de usuarios (ej. el grupo comercial)
- */
-export async function getGroupUsersQuotas(
-  userIds: string[], 
-  fiscalYear: string
-): Promise<Record<string, Record<BusinessLineId, number>>> {
-  const result: Record<string, Record<BusinessLineId, number>> = {};
-  for (const uid of userIds) {
-    result[uid] = await getCommercialQuotas(uid, fiscalYear);
-  }
-  return result;
-}
-
-/**
- * Obtener la configuración de objetivos del grupo (Director Comercial)
- */
 export async function getGroupTarget(groupId: string, fiscalYear: string): Promise<GroupTarget> {
   if (isSupabaseConfigured()) {
     try {
@@ -145,9 +260,6 @@ export async function getGroupTarget(groupId: string, fiscalYear: string): Promi
   return found || { ...INITIAL_GROUP_TARGET, group_id: groupId, fiscal_year: fiscalYear };
 }
 
-/**
- * Guardar la configuración de objetivos del grupo
- */
 export async function saveGroupTarget(target: GroupTarget): Promise<boolean> {
   const localList = getLocalData<GroupTarget[]>(LOCAL_STORAGE_GROUP_TARGETS_KEY, [INITIAL_GROUP_TARGET]);
   const index = localList.findIndex(t => t.group_id === target.group_id && t.fiscal_year === target.fiscal_year);
@@ -172,9 +284,6 @@ export async function saveGroupTarget(target: GroupTarget): Promise<boolean> {
   return true;
 }
 
-/**
- * Obtener ventas registradas para un usuario y año fiscal
- */
 export async function getUserSales(userId: string, vendorCode: string, fiscalYear: string): Promise<SalesRecord[]> {
   if (isSupabaseConfigured()) {
     try {
@@ -199,9 +308,26 @@ export async function getUserSales(userId: string, vendorCode: string, fiscalYea
   );
 }
 
-/**
- * Guardar lote de ventas importadas
- */
+export async function getAllSalesForFiscalYear(fiscalYear: string): Promise<SalesRecord[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('sales_records')
+        .select('*')
+        .eq('fiscal_year', fiscalYear);
+
+      if (!error && data) {
+        return data as SalesRecord[];
+      }
+    } catch (err) {
+      console.warn('Error fetching all sales from Supabase', err);
+    }
+  }
+
+  const allSales = getLocalData<SalesRecord[]>(LOCAL_STORAGE_SALES_KEY, []);
+  return allSales.filter(s => s.fiscal_year === fiscalYear);
+}
+
 export async function saveBatchSales(sales: SalesRecord[]): Promise<boolean> {
   const localList = getLocalData<SalesRecord[]>(LOCAL_STORAGE_SALES_KEY, []);
   setLocalData(LOCAL_STORAGE_SALES_KEY, [...localList, ...sales]);
@@ -220,9 +346,6 @@ export async function saveBatchSales(sales: SalesRecord[]): Promise<boolean> {
   return true;
 }
 
-/**
- * Limpiar ventas registradas para reiniciar o reimportar
- */
 export async function clearAllSales(): Promise<void> {
   setLocalData(LOCAL_STORAGE_SALES_KEY, []);
   if (isSupabaseConfigured()) {

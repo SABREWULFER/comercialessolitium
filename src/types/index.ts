@@ -1,3 +1,30 @@
+export type UserRole = 'comercial' | 'director_comercial' | 'director_territorial' | 'admin';
+
+export interface CommercialGroup {
+  id: string;
+  name: string;
+  code: string;
+  description: string;
+}
+
+export const COMMERCIAL_GROUPS: CommercialGroup[] = [
+  { id: 'grp-1', name: 'Grupo 1 - Aragón Norte', code: 'G1-NORTE', description: 'Zaragoza Norte, Huesca y Jacetania' },
+  { id: 'grp-2', name: 'Grupo 2 - Aragón Centro & Sur', code: 'G2-SUR', description: 'Zaragoza Centro, Ebro Sur y Teruel' },
+  { id: 'grp-3', name: 'Grupo 3 - Levante & Rioja', code: 'G3-RIOJA', description: 'La Rioja, Navarra y Ribera de Levante' },
+  { id: 'grp-4', name: 'Grupo 4 - Cuentas Estratégicas & Corporate', code: 'G4-CORP', description: 'Grandes cuentas industriales e instituciones' },
+];
+
+export interface CommercialUser {
+  id: string;
+  name: string;
+  vendor_code: string;
+  email: string;
+  role: UserRole;
+  group_id: string;
+  is_active?: boolean;
+  created_at?: string;
+}
+
 export type BusinessLineId = 
   | 'OFI'
   | 'MICRO'
@@ -74,15 +101,6 @@ export interface SalesRecord {
   fiscal_year: string;
   raw_data?: Record<string, any>;
   created_at?: string;
-}
-
-export interface CommercialUser {
-  id: string;
-  name: string;
-  vendor_code: string;
-  email: string;
-  role: 'commercial' | 'director' | 'admin';
-  group_id: string;
 }
 
 export interface QuotaProgress {

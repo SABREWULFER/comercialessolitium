@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { GroupTarget, CommercialUser, BusinessLineId, BUSINESS_LINES } from '@/types';
 import { DEMO_USERS } from '@/lib/constants';
-import { getGroupTarget, saveGroupTarget, getCommercialQuotas, saveCommercialQuotas } from '@/lib/storage';
+import { getGroupTarget, saveGroupTarget, getCommercialQuotas, saveCommercialQuotas, getAllUsers } from '@/lib/storage';
 import { calculateDCBonus } from '@/lib/calculations';
 
 interface DCTeamTargetsProps {
@@ -37,7 +37,7 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
   const [savingCommercial, setSavingCommercial] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
 
-  const teamMembers = DEMO_USERS.filter(u => u.role === 'commercial');
+  const [teamMembers, setTeamMembers] = useState<CommercialUser[]>([]);
 
   useEffect(() => {
     loadData();
@@ -46,11 +46,15 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
   const loadData = async () => {
     setLoading(true);
     try {
-      const gt = await getGroupTarget('grp-norte', fiscalYear);
+      const gt = await getGroupTarget('grp-1', fiscalYear);
       setGroupTarget(gt);
 
+      const all = await getAllUsers();
+      const commercials = all.filter(u => u.role === 'comercial');
+      setTeamMembers(commercials);
+
       const qMap: Record<string, Record<BusinessLineId, number>> = {};
-      for (const m of teamMembers) {
+      for (const m of commercials) {
         qMap[m.id] = await getCommercialQuotas(m.id, fiscalYear);
       }
       setTeamQuotas(qMap);
