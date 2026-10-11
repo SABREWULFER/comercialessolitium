@@ -6,10 +6,12 @@ import {
   BusinessLineId, 
   BUSINESS_LINES,
   CommercialUser,
-  COMMERCIAL_GROUPS
+  CommercialGroup,
+  DEFAULT_COMMERCIAL_GROUPS
 } from '@/types';
 import { INITIAL_GROUP_TARGET, DEMO_USERS } from './constants';
 
+const LOCAL_STORAGE_GROUPS_KEY = 'solitium_commercial_groups_cache';
 const LOCAL_STORAGE_USERS_KEY = 'solitium_profiles_users_cache';
 const LOCAL_STORAGE_QUOTAS_KEY = 'solitium_commercial_quotas_cache';
 const LOCAL_STORAGE_GROUP_TARGETS_KEY = 'solitium_group_targets_cache';
@@ -35,11 +37,166 @@ const setLocalData = <T>(key: string, data: T): void => {
   }
 };
 
+// Generador de UUID v4 seguro
+export function generateUUID(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+/**
+ * ==========================================
+ * GESTIÓN DE ZONAS Y GRUPOS TERRITORIALES
+ * Tabla: public.commercial_groups (id, name, director_commercial_id, created_at)
+ * ==========================================
+ */
+
+/**
+ * Obtener todos los grupos comerciales
+ */
+export async function getCommercialGroups(): Promise<CommercialGroup[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('commercial_groups')
+        .select('*')
+        .order('name');
+
+      if (!error && data && data.length > 0) {
+        setLocalData(LOCAL_STORAGE_GROUPS_KEY, data);
+        return data as CommercialGroup[];
+      }
+    } catch (err) {
+      console.warn('Error al consultar commercial_groups en Supabase, usando fallback', err);
+    }
+  }
+
+  let local = getLocalData<CommercialGroup[]>(LOCAL_STORAGE_GROUPS_KEY, []);
+  if (local.length === 0) {
+    local = [...DEFAULT_COMMERCIAL_GROUPS];
+    setLocalData(LOCAL_STORAGE_GROUPS_KEY, local);
+  }
+  return local;
+}
+
+/**
+ * Guardar o actualizar un grupo comercial
+ */
+export async function saveCommercialGroup(group: Partial<CommercialGroup> & { name: string }): Promise<{ success: boolean; group?: CommercialGroup; error?: string }> {
+  const currentGroups = await getCommercialGroups();
+  const validId = (group.id && group.id.includes('-') && group.id.length >= 32) ? group.id : generateUUID();
+
+  const groupPayload: CommercialGroup = {
+    id: validId,
+    name: group.name.trim(),
+    director_commercial_id: group.director_commercial_id || null,
+    created_at: group.created_at || new Date().toISOString(),
+  };
+
+  // Guardar en Supabase
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('commercial_groups')
+        .upsert({
+          id: groupPayload.id,
+          name: groupPayload.name,
+          director_commercial_id: groupPayload.director_commercial_id,
+        }, { onConflict: 'id' })
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error al guardar en commercial_groups:', error);
+        return { success: false, error: error.message };
+      }
+
+      if (data) {
+        groupPayload.id = data.id;
+      }
+    } catch (err: any) {
+      console.error('Excepción guardando grupo en Supabase:', err);
+      return { success: false, error: err.message || 'Error de conexión con Supabase' };
+    }
+  }
+
+  // Guardado en caché local
+  const existingIndex = currentGroups.findIndex(g => g.id === groupPayload.id);
+  if (existingIndex >= 0) {
+    currentGroups[existingIndex] = groupPayload;
+  } else {
+    currentGroups.push(groupPayload);
+  }
+  setLocalData(LOCAL_STORAGE_GROUPS_KEY, currentGroups);
+
+  return { success: true, group: groupPayload };
+}
+
+/**
+ * Inicializar los 4 grupos por defecto si la tabla está vacía
+ */
+export async function initializeDefaultGroups(): Promise<{ success: boolean; groups: CommercialGroup[]; error?: string }> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('commercial_groups')
+        .upsert(
+          DEFAULT_COMMERCIAL_GROUPS.map(g => ({
+            id: g.id,
+            name: g.name,
+            director_commercial_id: g.director_commercial_id,
+          })), 
+          { onConflict: 'id' }
+        )
+        .select();
+
+      if (error) {
+        return { success: false, groups: [], error: error.message };
+      }
+
+      if (data && data.length > 0) {
+        setLocalData(LOCAL_STORAGE_GROUPS_KEY, data);
+        return { success: true, groups: data as CommercialGroup[] };
+      }
+    } catch (err: any) {
+      return { success: false, groups: [], error: err.message };
+    }
+  }
+
+  setLocalData(LOCAL_STORAGE_GROUPS_KEY, DEFAULT_COMMERCIAL_GROUPS);
+  return { success: true, groups: DEFAULT_COMMERCIAL_GROUPS };
+}
+
 /**
  * ==========================================
  * GESTIÓN DE PERFILES Y USUARIOS (ADMIN)
+ * Tabla: public.profiles (id, full_name, email, role, group_id, seller_code, created_at)
  * ==========================================
  */
+
+/**
+ * Normalizar objeto de perfil
+ */
+function normalizeProfile(p: any): CommercialUser {
+  const fullName = p.full_name || p.name || 'Sin Nombre';
+  const sellerCode = p.seller_code || p.vendor_code || '';
+  return {
+    id: p.id,
+    full_name: fullName,
+    name: fullName,
+    email: p.email,
+    role: p.role,
+    group_id: p.group_id,
+    seller_code: sellerCode,
+    vendor_code: sellerCode,
+    created_at: p.created_at,
+    is_active: p.is_active ?? true,
+  };
+}
 
 /**
  * Obtener todos los usuarios / perfiles del sistema
@@ -50,72 +207,93 @@ export async function getAllUsers(): Promise<CommercialUser[]> {
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
-        .order('name');
+        .order('full_name');
 
       if (!error && data && data.length > 0) {
-        return data as CommercialUser[];
+        const normalized = data.map(normalizeProfile);
+        setLocalData(LOCAL_STORAGE_USERS_KEY, normalized);
+        return normalized;
       }
     } catch (err) {
-      console.warn('Error al consultar perfiles en Supabase, usando caché local', err);
+      console.warn('Error al consultar profiles en Supabase, usando caché local', err);
     }
   }
 
-  // Fallback local con inicialización desde DEMO_USERS
   let localUsers = getLocalData<CommercialUser[]>(LOCAL_STORAGE_USERS_KEY, []);
   if (localUsers.length === 0) {
-    localUsers = [...DEMO_USERS];
+    localUsers = DEMO_USERS.map(normalizeProfile);
     setLocalData(LOCAL_STORAGE_USERS_KEY, localUsers);
   }
-  return localUsers;
+  return localUsers.map(normalizeProfile);
 }
 
 /**
  * Crear o actualizar usuario / perfil
+ * Columnas exactas: id (uuid), full_name (text), email (text), role (text), group_id (uuid), seller_code (text)
  */
-export async function saveUser(user: CommercialUser): Promise<boolean> {
+export async function saveUser(user: Partial<CommercialUser> & { full_name: string; email: string; role: any; seller_code: string }): Promise<{ success: boolean; user?: CommercialUser; error?: string }> {
   const users = await getAllUsers();
-  const existingIdx = users.findIndex(u => u.id === user.id || u.email.toLowerCase() === user.email.toLowerCase());
 
-  if (existingIdx >= 0) {
-    users[existingIdx] = { ...users[existingIdx], ...user };
-  } else {
-    users.push(user);
+  // Asegurar UUID válido para id
+  const validUserId = (user.id && user.id.includes('-') && user.id.length >= 32) ? user.id : generateUUID();
+  
+  // Asegurar UUID válido o null para group_id
+  let validGroupId: string | null = user.group_id || null;
+  if (validGroupId && (!validGroupId.includes('-') || validGroupId.length < 32)) {
+    // Si venía un formato no-uuid tipo 'grp-1', mapear al default correspondiente
+    const mapped = DEFAULT_COMMERCIAL_GROUPS[0].id;
+    validGroupId = mapped;
   }
-  setLocalData(LOCAL_STORAGE_USERS_KEY, users);
+
+  const profilePayload = {
+    id: validUserId,
+    full_name: (user.full_name || user.name || '').trim(),
+    email: user.email.trim().toLowerCase(),
+    role: user.role,
+    group_id: validGroupId,
+    seller_code: (user.seller_code || user.vendor_code || '').trim().toUpperCase(),
+  };
 
   if (isSupabaseConfigured()) {
     try {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('profiles')
-        .upsert({
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          vendor_code: user.vendor_code,
-          role: user.role,
-          group_id: user.group_id,
-          is_active: user.is_active ?? true,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'id' });
+        .upsert(profilePayload, { onConflict: 'id' })
+        .select()
+        .single();
 
       if (error) {
-        console.error('Error al guardar perfil en Supabase:', error);
-        return false;
+        console.error('Error exacto de Supabase en profiles.upsert:', error);
+        return { success: false, error: `${error.message} (${error.details || error.hint || error.code})` };
       }
-      return true;
-    } catch (err) {
+
+      if (data) {
+        profilePayload.id = data.id;
+      }
+    } catch (err: any) {
       console.error('Excepción guardando perfil en Supabase:', err);
-      return false;
+      return { success: false, error: err.message || 'Excepción no controlada al conectar con Supabase' };
     }
   }
 
-  return true;
+  // Actualizar caché local
+  const normalizedSaved = normalizeProfile(profilePayload);
+  const existingIdx = users.findIndex(u => u.id === profilePayload.id || u.email.toLowerCase() === profilePayload.email.toLowerCase());
+
+  if (existingIdx >= 0) {
+    users[existingIdx] = normalizedSaved;
+  } else {
+    users.push(normalizedSaved);
+  }
+  setLocalData(LOCAL_STORAGE_USERS_KEY, users);
+
+  return { success: true, user: normalizedSaved };
 }
 
 /**
  * Dar de baja o eliminar un usuario
  */
-export async function deleteUser(userId: string): Promise<boolean> {
+export async function deleteUser(userId: string): Promise<{ success: boolean; error?: string }> {
   const users = await getAllUsers();
   const filtered = users.filter(u => u.id !== userId);
   setLocalData(LOCAL_STORAGE_USERS_KEY, filtered);
@@ -126,14 +304,17 @@ export async function deleteUser(userId: string): Promise<boolean> {
         .from('profiles')
         .delete()
         .eq('id', userId);
-      return !error;
-    } catch (err) {
-      console.error('Error al eliminar usuario en Supabase:', err);
-      return false;
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
     }
   }
 
-  return true;
+  return { success: true };
 }
 
 /**
@@ -149,7 +330,7 @@ export async function getUserProfileByEmail(email: string): Promise<CommercialUs
         .single();
 
       if (!error && data) {
-        return data as CommercialUser;
+        return normalizeProfile(data);
       }
     } catch (err) {
       console.warn('Error buscando usuario por email en Supabase:', err);

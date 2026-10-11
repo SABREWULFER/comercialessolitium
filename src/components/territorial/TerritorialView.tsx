@@ -12,8 +12,8 @@ import {
   ChevronRight,
   Filter
 } from 'lucide-react';
-import { COMMERCIAL_GROUPS, CommercialUser, GroupTarget } from '@/types';
-import { getAllUsers, getGroupTarget, getAllSalesForFiscalYear } from '@/lib/storage';
+import { CommercialUser, GroupTarget, CommercialGroup } from '@/types';
+import { getAllUsers, getGroupTarget, getAllSalesForFiscalYear, getCommercialGroups } from '@/lib/storage';
 
 interface TerritorialViewProps {
   fiscalYear: string;
@@ -24,6 +24,7 @@ export const TerritorialView: React.FC<TerritorialViewProps> = ({
   fiscalYear,
   onSelectGroup,
 }) => {
+  const [groups, setGroups] = useState<CommercialGroup[]>([]);
   const [users, setUsers] = useState<CommercialUser[]>([]);
   const [sales, setSales] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -35,8 +36,12 @@ export const TerritorialView: React.FC<TerritorialViewProps> = ({
   const loadTerritorialData = async () => {
     setLoading(true);
     try {
-      const u = await getAllUsers();
-      const s = await getAllSalesForFiscalYear(fiscalYear);
+      const [g, u, s] = await Promise.all([
+        getCommercialGroups(),
+        getAllUsers(),
+        getAllSalesForFiscalYear(fiscalYear),
+      ]);
+      setGroups(g);
       setUsers(u);
       setSales(s);
     } catch (err) {
@@ -46,11 +51,11 @@ export const TerritorialView: React.FC<TerritorialViewProps> = ({
     }
   };
 
-  // Calcular métricas de cada uno de los 4 grupos
-  const groupStats = COMMERCIAL_GROUPS.map(group => {
+  // Calcular métricas dinámicas de los grupos existentes en la base de datos
+  const groupStats = groups.map(group => {
     const groupUsers = users.filter(u => u.group_id === group.id && u.role === 'comercial');
     const groupUserIds = groupUsers.map(u => u.id);
-    const groupVendorCodes = groupUsers.map(u => u.vendor_code.toLowerCase());
+    const groupVendorCodes = groupUsers.map(u => (u.seller_code || u.vendor_code || '').toLowerCase());
 
     const groupSales = sales.filter(s => 
       groupUserIds.includes(s.user_id) || groupVendorCodes.includes(s.vendor_code?.toLowerCase())
@@ -60,15 +65,15 @@ export const TerritorialView: React.FC<TerritorialViewProps> = ({
     const totalNewClients = groupSales.filter(s => s.is_new_client).length;
 
     // Director comercial del grupo
-    const dcUser = users.find(u => u.group_id === group.id && u.role === 'director_comercial');
+    const dcUser = users.find(u => u.id === group.director_commercial_id || (u.group_id === group.id && u.role === 'director_comercial'));
 
     return {
       group,
       commercialCount: groupUsers.length,
-      dcName: dcUser ? dcUser.name : 'Por Asignar',
+      dcName: dcUser ? (dcUser.full_name || dcUser.name) : 'Por Asignar',
       totalFacturacion,
       totalNewClients,
-      estimacionTarget: 250000, // Base orientativa de grupo
+      estimacionTarget: 250000,
       cumplimiento: (totalFacturacion / 250000) * 100,
     };
   });
@@ -88,10 +93,10 @@ export const TerritorialView: React.FC<TerritorialViewProps> = ({
           </div>
           <h2 className="text-xl font-black text-slate-900 mt-1 flex items-center gap-2">
             <Building2 className="w-5 h-5 text-indigo-600" />
-            Consolidado de los 4 Grupos Comerciales Territoriales
+            Consolidado de Zonas Territoriales ({groups.length} Grupos)
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            Supervisión integral de rendimiento, ventas e incentivos de todos los distritos comerciales de Solitium.
+            Supervisión integral de rendimiento, ventas e incentivos por zona comercial en Solitium.
           </p>
         </div>
 
@@ -103,13 +108,13 @@ export const TerritorialView: React.FC<TerritorialViewProps> = ({
             </p>
           </div>
           <div className="border-l border-slate-700 pl-4 text-xs text-slate-300">
-            <p>Grupos Activos: <span className="font-bold text-white">4</span></p>
+            <p>Grupos Activos: <span className="font-bold text-white">{groups.length}</span></p>
             <p>Comerciales: <span className="font-bold text-white">{users.filter(u => u.role === 'comercial').length}</span></p>
           </div>
         </div>
       </div>
 
-      {/* Grid de los 4 Grupos */}
+      {/* Grid de Grupos */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         {groupStats.map(({ group, commercialCount, dcName, totalFacturacion, totalNewClients, cumplimiento }) => (
           <div 
@@ -120,12 +125,11 @@ export const TerritorialView: React.FC<TerritorialViewProps> = ({
               <div className="flex items-start justify-between mb-3">
                 <div>
                   <span className="text-[10px] font-bold bg-indigo-50 text-indigo-700 px-2.5 py-0.5 rounded-md font-mono">
-                    {group.code}
+                    ID: {group.id.slice(0, 8)}...
                   </span>
                   <h3 className="text-base font-bold text-slate-900 mt-1">
                     {group.name}
                   </h3>
-                  <p className="text-xs text-slate-500">{group.description}</p>
                 </div>
                 <div className="text-right">
                   <span className="text-xs font-black text-indigo-600">
