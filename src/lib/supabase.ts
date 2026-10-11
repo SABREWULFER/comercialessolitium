@@ -12,11 +12,14 @@ export const isSupabaseConfigured = () => {
   );
 };
 
+export const hasServiceRoleKey = () => {
+  return Boolean(supabaseServiceRoleKey && supabaseServiceRoleKey.length > 20);
+};
+
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 /**
- * Cliente con permisos de Administrador (service_role) para operaciones en auth.users y profiles.
- * Se inicializa usando SUPABASE_SERVICE_ROLE_KEY o haciendo fallback al anonKey si no está provista.
+ * Cliente con permisos de Administrador para operaciones del servidor en auth.users y profiles.
  */
 export const getSupabaseAdmin = () => {
   const secretKey = supabaseServiceRoleKey || supabaseAnonKey;

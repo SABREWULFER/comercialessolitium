@@ -174,9 +174,7 @@ export const AdminPanel: React.FC = () => {
 
         setNotification({
           type: 'success',
-          message: editingUser 
-            ? 'Usuario actualizado con éxito en Supabase Auth y Profiles.' 
-            : 'Nuevo usuario creado correctamente en Supabase Auth y Profiles.',
+          message: 'Usuario guardado con éxito',
         });
         setIsUserModalOpen(false);
         await loadData();
