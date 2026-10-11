@@ -16,8 +16,8 @@ import {
   UserCheck,
   ShieldAlert
 } from 'lucide-react';
-import { GroupTarget, CommercialUser, BusinessLineId, BUSINESS_LINES, CommercialGroup } from '@/types';
-import { getGroupTarget, saveGroupTarget, getCommercialQuotas, saveCommercialQuotas, getAllUsers, getCommercialGroups } from '@/lib/storage';
+import { GroupTarget, CommercialUser, BusinessLineId, BUSINESS_LINES, CommercialGroup, SalesRecord } from '@/types';
+import { getGroupTarget, saveGroupTarget, getCommercialQuotas, saveCommercialQuotas, getAllUsers, getCommercialGroups, getAllSalesForFiscalYear } from '@/lib/storage';
 import { calculateDCBonus } from '@/lib/calculations';
 
 interface DCTeamTargetsProps {
@@ -54,6 +54,7 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
   const [notification, setNotification] = useState<string | null>(null);
 
   const [teamMembers, setTeamMembers] = useState<CommercialUser[]>([]);
+  const [groupSales, setGroupSales] = useState<SalesRecord[]>([]);
 
   useEffect(() => {
     loadData();
@@ -114,6 +115,12 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
           qMap[m.id] = await getCommercialQuotas(m.id, fiscalYear);
         }
         setTeamQuotas(qMap);
+
+        // Cargar ventas consolidadas de los integrantes del grupo
+        const allSales = await getAllSalesForFiscalYear(fiscalYear);
+        const allMemberIds = [...commercials.map(u => u.id), ...(activeDcUser ? [activeDcUser.id] : [])];
+        const relevantSales = allSales.filter(s => allMemberIds.includes(s.commercial_id || s.user_id || ''));
+        setGroupSales(relevantSales);
       }
     } catch (err) {
       console.error(err);
@@ -192,15 +199,26 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
 
   const activeGroupName = groups.find(g => g.id === selectedGroupId)?.name || groupTarget?.group_name || 'Equipo Comercial';
 
-  // Simulación de cálculo de bono del DC para vista previa (con escalado 90%-130%+)
+  // Cálculo del bono del DC (basado en ventas reales si existen, o estimación de referencia)
+  const realGroupBilling = groupSales.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+  const realNewClients = groupSales.filter(s => s.is_new_client).length;
+  const realManagedAmount = groupSales
+    .filter(s => s.is_managed_service || s.line_id === 'MI' || s.line_id === 'SW')
+    .reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+  const realManagedServicesPct = realGroupBilling > 0 ? (realManagedAmount / realGroupBilling) * 100 : 0;
+
+  const actualOrSimulatedBilling = realGroupBilling > 0 ? realGroupBilling : totalGroupTargetCalculated * 0.96;
+  const actualOrSimulatedNewClients = realGroupBilling > 0 ? realNewClients : 19;
+  const actualOrSimulatedManaged = realGroupBilling > 0 ? realManagedServicesPct : 26.5;
+
   const dcBonusPreview = groupTarget ? calculateDCBonus(
     { ...groupTarget, annual_base_bonus: groupTarget.annual_base_bonus || 40000 },
     totalGroupTargetCalculated,
-    totalGroupTargetCalculated * 0.96, // 96% de cumplimiento estimado de muestra
-    26.5, // 26.5% Servicios gestionados
-    19,   // 19 nuevos clientes
-    9,    // 9 leads SAGE
-    14000 // 14.000€ BOL
+    actualOrSimulatedBilling,
+    actualOrSimulatedManaged,
+    actualOrSimulatedNewClients,
+    9,
+    14000
   ) : null;
 
   if (loading || !groupTarget) {

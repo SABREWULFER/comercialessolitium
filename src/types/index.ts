@@ -92,15 +92,20 @@ export interface GroupTarget {
 
 export interface SalesRecord {
   id?: string;
-  user_id: string;
-  vendor_code: string;
+  commercial_id: string; // uuid de public.profiles
+  user_id?: string; // compatibilidad
+  vendor_code?: string; // compatibilidad
   line_id: BusinessLineId;
-  amount: number;
-  is_new_client: boolean;
-  document_date: string;
-  invoice_number: string;
-  client_name?: string;
   fiscal_year: string;
+  amount: number;
+  discount_rate?: number;
+  is_managed_service?: boolean;
+  is_new_client: boolean;
+  is_financed?: boolean;
+  invoice_number: string;
+  sale_date?: string;
+  document_date?: string; // compatibilidad
+  client_name?: string;
   raw_data?: Record<string, any>;
   created_at?: string;
 }

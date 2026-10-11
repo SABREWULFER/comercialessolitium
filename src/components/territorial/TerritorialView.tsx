@@ -54,18 +54,17 @@ export const TerritorialView: React.FC<TerritorialViewProps> = ({
   // Calcular métricas dinámicas de los grupos existentes en la base de datos
   const groupStats = groups.map(group => {
     const groupUsers = users.filter(u => u.group_id === group.id && u.role === 'comercial');
-    const groupUserIds = groupUsers.map(u => u.id);
-    const groupVendorCodes = groupUsers.map(u => (u.seller_code || u.vendor_code || '').toLowerCase());
+    const dcUser = users.find(u => u.id === group.director_commercial_id || (u.group_id === group.id && u.role === 'director_comercial'));
+    const allMemberIds = [...groupUsers.map(u => u.id), ...(dcUser ? [dcUser.id] : [])];
+    const groupVendorCodes = [...groupUsers, ...(dcUser ? [dcUser] : [])].map(u => (u.seller_code || u.vendor_code || '').toLowerCase());
 
     const groupSales = sales.filter(s => 
-      groupUserIds.includes(s.user_id) || groupVendorCodes.includes(s.vendor_code?.toLowerCase())
+      allMemberIds.includes(s.commercial_id || s.user_id || '') || 
+      (s.vendor_code && groupVendorCodes.includes(s.vendor_code.toLowerCase()))
     );
 
     const totalFacturacion = groupSales.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
     const totalNewClients = groupSales.filter(s => s.is_new_client).length;
-
-    // Director comercial del grupo
-    const dcUser = users.find(u => u.id === group.director_commercial_id || (u.group_id === group.id && u.role === 'director_comercial'));
 
     return {
       group,

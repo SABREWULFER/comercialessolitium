@@ -463,6 +463,43 @@ export async function saveGroupTarget(target: GroupTarget): Promise<boolean> {
   return true;
 }
 
+function normalizeSaleRecord(s: any): SalesRecord {
+  const commId = s.commercial_id || s.user_id || '';
+  const dateVal = s.sale_date || s.document_date || '';
+  return {
+    id: s.id,
+    commercial_id: commId,
+    user_id: commId,
+    vendor_code: s.vendor_code || '',
+    line_id: s.line_id,
+    amount: Number(s.amount) || 0,
+    discount_rate: Number(s.discount_rate) || 0,
+    is_managed_service: Boolean(s.is_managed_service),
+    is_new_client: Boolean(s.is_new_client),
+    is_financed: Boolean(s.is_financed),
+    invoice_number: s.invoice_number || '',
+    sale_date: dateVal,
+    document_date: dateVal,
+    client_name: s.client_name,
+    fiscal_year: s.fiscal_year,
+    raw_data: s.raw_data,
+    created_at: s.created_at,
+  };
+}
+
+export interface RawDBSaleRecord {
+  commercial_id: string; // uuid de public.profiles
+  line_id: string;
+  fiscal_year: string;
+  amount: number;
+  discount_rate: number;
+  is_managed_service: boolean;
+  is_new_client: boolean;
+  is_financed: boolean;
+  invoice_number: string;
+  sale_date: string; // YYYY-MM-DD
+}
+
 export async function getUserSales(userId: string, vendorCode: string, fiscalYear: string): Promise<SalesRecord[]> {
   if (isSupabaseConfigured()) {
     try {
@@ -470,21 +507,23 @@ export async function getUserSales(userId: string, vendorCode: string, fiscalYea
         .from('sales_records')
         .select('*')
         .eq('fiscal_year', fiscalYear)
-        .or(`user_id.eq.${userId},vendor_code.eq.${vendorCode}`);
+        .eq('commercial_id', userId);
 
       if (!error && data) {
-        return data as SalesRecord[];
+        return data.map(normalizeSaleRecord);
       }
     } catch (err) {
       console.warn('Error fetching sales from Supabase', err);
     }
   }
 
-  const allSales = getLocalData<SalesRecord[]>(LOCAL_STORAGE_SALES_KEY, []);
-  return allSales.filter(s => 
-    s.fiscal_year === fiscalYear && 
-    (s.user_id === userId || s.vendor_code.toLowerCase() === vendorCode.toLowerCase())
-  );
+  const allSales = getLocalData<any[]>(LOCAL_STORAGE_SALES_KEY, []);
+  return allSales
+    .filter(s => 
+      s.fiscal_year === fiscalYear && 
+      (s.commercial_id === userId || s.user_id === userId || (s.vendor_code && s.vendor_code.toLowerCase() === vendorCode.toLowerCase()))
+    )
+    .map(normalizeSaleRecord);
 }
 
 export async function getAllSalesForFiscalYear(fiscalYear: string): Promise<SalesRecord[]> {
@@ -496,40 +535,90 @@ export async function getAllSalesForFiscalYear(fiscalYear: string): Promise<Sale
         .eq('fiscal_year', fiscalYear);
 
       if (!error && data) {
-        return data as SalesRecord[];
+        return data.map(normalizeSaleRecord);
       }
     } catch (err) {
       console.warn('Error fetching all sales from Supabase', err);
     }
   }
 
-  const allSales = getLocalData<SalesRecord[]>(LOCAL_STORAGE_SALES_KEY, []);
-  return allSales.filter(s => s.fiscal_year === fiscalYear);
+  const allSales = getLocalData<any[]>(LOCAL_STORAGE_SALES_KEY, []);
+  return allSales
+    .filter(s => s.fiscal_year === fiscalYear)
+    .map(normalizeSaleRecord);
 }
 
-export async function saveBatchSales(sales: SalesRecord[]): Promise<boolean> {
-  const localList = getLocalData<SalesRecord[]>(LOCAL_STORAGE_SALES_KEY, []);
-  setLocalData(LOCAL_STORAGE_SALES_KEY, [...localList, ...sales]);
+export async function saveSalesRecordsDirect(
+  records: RawDBSaleRecord[]
+): Promise<{ success: boolean; insertedCount: number; error?: string }> {
+  // Sincronizar también con la caché local
+  const localList = getLocalData<any[]>(LOCAL_STORAGE_SALES_KEY, []);
+  const normalized = records.map(normalizeSaleRecord);
+  setLocalData(LOCAL_STORAGE_SALES_KEY, [...localList, ...normalized]);
 
   if (isSupabaseConfigured()) {
     try {
-      const { error } = await supabase
-        .from('sales_records')
-        .insert(sales);
-      return !error;
-    } catch (err) {
-      console.error('Error guardando ventas en Supabase', err);
-      return false;
+      const BATCH_SIZE = 50;
+      let totalInserted = 0;
+
+      for (let i = 0; i < records.length; i += BATCH_SIZE) {
+        const batch = records.slice(i, i + BATCH_SIZE).map(r => ({
+          commercial_id: r.commercial_id,
+          line_id: r.line_id,
+          fiscal_year: r.fiscal_year,
+          amount: Number(r.amount) || 0,
+          discount_rate: Number(r.discount_rate) || 0,
+          is_managed_service: Boolean(r.is_managed_service),
+          is_new_client: Boolean(r.is_new_client),
+          is_financed: Boolean(r.is_financed),
+          invoice_number: String(r.invoice_number || ''),
+          sale_date: r.sale_date,
+        }));
+
+        const { error } = await supabase
+          .from('sales_records')
+          .insert(batch);
+
+        if (error) {
+          console.error('Error insertando lote de 50 en sales_records:', error);
+          return { success: false, insertedCount: totalInserted, error: error.message };
+        }
+        totalInserted += batch.length;
+      }
+
+      return { success: true, insertedCount: totalInserted };
+    } catch (err: any) {
+      console.error('Excepción guardando ventas en Supabase:', err);
+      return { success: false, insertedCount: 0, error: err.message || 'Error de conexión' };
     }
   }
-  return true;
+
+  return { success: true, insertedCount: records.length };
+}
+
+export async function saveBatchSales(sales: SalesRecord[]): Promise<boolean> {
+  const dbRecords: RawDBSaleRecord[] = sales.map(s => ({
+    commercial_id: s.commercial_id || s.user_id || '',
+    line_id: s.line_id,
+    fiscal_year: s.fiscal_year,
+    amount: Number(s.amount) || 0,
+    discount_rate: Number(s.discount_rate) || 0,
+    is_managed_service: Boolean(s.is_managed_service),
+    is_new_client: Boolean(s.is_new_client),
+    is_financed: Boolean(s.is_financed),
+    invoice_number: s.invoice_number || '',
+    sale_date: s.sale_date || s.document_date || new Date().toISOString().split('T')[0],
+  }));
+
+  const res = await saveSalesRecordsDirect(dbRecords);
+  return res.success;
 }
 
 export async function clearAllSales(): Promise<void> {
   setLocalData(LOCAL_STORAGE_SALES_KEY, []);
   if (isSupabaseConfigured()) {
     try {
-      await supabase.from('sales_records').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      await supabase.from('sales_records').delete().neq('fiscal_year', 'non-existent-year');
     } catch (err) {
       console.error('Error vaciando ventas en Supabase', err);
     }
