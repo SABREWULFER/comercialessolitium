@@ -49,7 +49,8 @@ export const QuotasModal: React.FC<QuotasModalProps> = ({
   };
 
   const handleInputChange = (lineId: BusinessLineId, value: string) => {
-    const num = parseFloat(value) || 0;
+    const clean = value.trim().replace(/\s+/g, '').replace(',', '.');
+    const num = clean === '' ? 0 : (parseFloat(clean) || 0);
     setQuotas(prev => ({
       ...prev,
       [lineId]: num,
@@ -155,7 +156,7 @@ export const QuotasModal: React.FC<QuotasModalProps> = ({
                     <input
                       id={`quota-${line.id}`}
                       type="number"
-                      step={line.isCurrency ? "100" : "1"}
+                      step="any"
                       min="0"
                       value={quotas[line.id] ?? 0}
                       onChange={(e) => handleInputChange(line.id, e.target.value)}

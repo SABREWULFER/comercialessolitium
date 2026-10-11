@@ -94,7 +94,7 @@ export const INITIAL_GROUP_TARGET: GroupTarget = {
   fiscal_year: CURRENT_FISCAL_YEAR,
   group_name: DEFAULT_COMMERCIAL_GROUPS[0].name,
   dc_user_id: 'c0000000-0000-0000-0000-000000000003',
-  annual_base_bonus: 7500,
+  annual_base_bonus: 40000,
   managed_services_pct: 28,
   new_client_units: 18,
   turbo_sage_leads: 10,

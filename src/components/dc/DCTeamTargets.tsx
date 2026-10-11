@@ -12,10 +12,11 @@ import {
   Edit3,
   Layers,
   Sparkles,
-  Zap
+  Zap,
+  UserCheck,
+  ShieldAlert
 } from 'lucide-react';
 import { GroupTarget, CommercialUser, BusinessLineId, BUSINESS_LINES, CommercialGroup } from '@/types';
-import { DEMO_USERS } from '@/lib/constants';
 import { getGroupTarget, saveGroupTarget, getCommercialQuotas, saveCommercialQuotas, getAllUsers, getCommercialGroups } from '@/lib/storage';
 import { calculateDCBonus } from '@/lib/calculations';
 
@@ -23,6 +24,14 @@ interface DCTeamTargetsProps {
   currentUser: CommercialUser;
   fiscalYear: string;
   onRefresh: () => void;
+}
+
+function cleanParseNumber(val: string | number): number {
+  if (val === undefined || val === null || val === '') return 0;
+  if (typeof val === 'number') return isNaN(val) ? 0 : val;
+  const clean = String(val).trim().replace(/\s+/g, '').replace(',', '.');
+  const num = parseFloat(clean);
+  return isNaN(num) ? 0 : num;
 }
 
 export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
@@ -34,6 +43,9 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
   const [selectedGroupId, setSelectedGroupId] = useState<string>('');
   const [groupTarget, setGroupTarget] = useState<GroupTarget | null>(null);
   const [teamQuotas, setTeamQuotas] = useState<Record<string, Record<BusinessLineId, number>>>({});
+  const [dcUser, setDcUser] = useState<CommercialUser | null>(null);
+  const [dcPersonalQuotas, setDcPersonalQuotas] = useState<Record<BusinessLineId, number>>({} as any);
+
   const [selectedUserForEdit, setSelectedUserForEdit] = useState<CommercialUser | null>(null);
   const [editedUserQuotas, setEditedUserQuotas] = useState<Record<BusinessLineId, number>>({} as any);
   const [loading, setLoading] = useState(true);
@@ -77,6 +89,22 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
         setGroupTarget(gt);
 
         const all = await getAllUsers();
+
+        // Identificar el Director Comercial de este grupo
+        const activeDcUser = all.find(u => 
+          (groupObj && u.id === groupObj.director_commercial_id) || 
+          (u.group_id === targetGroupId && u.role === 'director_comercial')
+        ) || (currentUser.role === 'director_comercial' ? currentUser : null);
+
+        setDcUser(activeDcUser);
+
+        if (activeDcUser) {
+          const dcQ = await getCommercialQuotas(activeDcUser.id, fiscalYear);
+          setDcPersonalQuotas(dcQ);
+        } else {
+          setDcPersonalQuotas({} as any);
+        }
+
         // Filtrar estrictamente solo comerciales asignados al grupo activo
         const commercials = all.filter(u => u.role === 'comercial' && u.group_id === targetGroupId);
         setTeamMembers(commercials);
@@ -103,9 +131,9 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
       await saveGroupTarget({
         ...groupTarget,
         group_id: selectedGroupId || groupTarget.group_id,
-        dc_user_id: currentUser.id,
+        dc_user_id: dcUser?.id || currentUser.id,
       });
-      setNotification('¡Objetivos y métricas del Director Comercial guardados con éxito!');
+      setNotification('¡Objetivos consolidados y métricas del Director Comercial guardados con éxito en Supabase!');
       onRefresh();
       setTimeout(() => setNotification(null), 3000);
     } catch (err) {
@@ -115,13 +143,17 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
     }
   };
 
-  // Abrir editor de cuotas para un comercial específico del equipo
+  // Abrir editor de cuotas para un comercial específico o para el DC
   const handleOpenEditUser = (user: CommercialUser) => {
     setSelectedUserForEdit(user);
-    setEditedUserQuotas({ ...teamQuotas[user.id] });
+    if (dcUser && user.id === dcUser.id) {
+      setEditedUserQuotas({ ...dcPersonalQuotas });
+    } else {
+      setEditedUserQuotas({ ...(teamQuotas[user.id] || {}) });
+    }
   };
 
-  // Guardar cuotas editadas para ese comercial
+  // Guardar cuotas editadas para ese usuario (comercial o DC)
   const handleSaveUserQuotas = async () => {
     if (!selectedUserForEdit) return;
     setSavingCommercial(true);
@@ -129,7 +161,7 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
       await saveCommercialQuotas(selectedUserForEdit.id, fiscalYear, editedUserQuotas);
       await loadData();
       setSelectedUserForEdit(null);
-      setNotification(`Objetivos de ${selectedUserForEdit.name} actualizados correctamente.`);
+      setNotification(`Objetivos de ${selectedUserForEdit.full_name || selectedUserForEdit.name} actualizados correctamente en Supabase.`);
       onRefresh();
       setTimeout(() => setNotification(null), 3000);
     } catch (err) {
@@ -139,7 +171,7 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
     }
   };
 
-  // 3. El objetivo total del grupo se calcula automáticamente como la suma de los objetivos individuales + cuota DC
+  // 1. Suma de las cuotas de los comerciales asignados
   const individualSumCurrency = teamMembers.reduce((acc, member) => {
     const uQuotas = teamQuotas[member.id] || {};
     const memberTotal = BUSINESS_LINES
@@ -148,14 +180,21 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
     return acc + memberTotal;
   }, 0);
 
+  // 2. Cuota personal propia del Director Comercial (ventas directas)
+  const dcPersonalSum = BUSINESS_LINES
+    .filter(b => b.isCurrency)
+    .reduce((s, b) => s + (dcPersonalQuotas[b.id] || 0), 0);
+
   const dcExtra = groupTarget?.dc_extra_quota || 0;
-  const totalGroupTargetCalculated = individualSumCurrency + dcExtra;
+
+  // 3. Cuota Consolidada Total del Equipo (Comerciales + Cuota Personal DC + Televenta Extra)
+  const totalGroupTargetCalculated = individualSumCurrency + dcPersonalSum + dcExtra;
 
   const activeGroupName = groups.find(g => g.id === selectedGroupId)?.name || groupTarget?.group_name || 'Equipo Comercial';
 
-  // Simulación de cálculo de bono del DC para vista previa
+  // Simulación de cálculo de bono del DC para vista previa (con escalado 90%-130%+)
   const dcBonusPreview = groupTarget ? calculateDCBonus(
-    groupTarget,
+    { ...groupTarget, annual_base_bonus: groupTarget.annual_base_bonus || 40000 },
     totalGroupTargetCalculated,
     totalGroupTargetCalculated * 0.96, // 96% de cumplimiento estimado de muestra
     26.5, // 26.5% Servicios gestionados
@@ -200,7 +239,7 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
             Objetivos del Equipo y Configuración del Director
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            Supervisa y edita las cuotas de cada comercial, y define las métricas estratégicas del grupo.
+            Supervisa y edita las cuotas de cada comercial, gestiona tu cuota personal de ventas directas y el consolidado del equipo.
           </p>
         </div>
 
@@ -222,21 +261,95 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
             </select>
           </div>
         )}
+      </div>
 
-        {/* Resumen Automático del Objetivo Grupal */}
-        <div className="bg-slate-900 text-white p-4 rounded-xl flex items-center gap-6">
+      {/* Resumen Automático del Objetivo Grupal y Desglose Dual */}
+      <div className="bg-slate-900 text-white p-6 rounded-2xl flex flex-col lg:flex-row lg:items-center justify-between gap-6 shadow-sm">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-black px-2 py-0.5 rounded uppercase tracking-wider">
+              Cuota Consolidada de Equipo
+            </span>
+            <span className="text-xs text-slate-400 font-medium">&bull; Objetivo Total Anual</span>
+          </div>
+          <p className="text-3xl font-black text-emerald-400 mt-1">
+            {totalGroupTargetCalculated.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
+          </p>
+          <p className="text-xs text-slate-400 mt-1">
+            Base para el cálculo del Bono de Dirección Anual de <strong>{(groupTarget.annual_base_bonus || 40000).toLocaleString('es-ES')} €</strong>
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-5 border-t lg:border-t-0 lg:border-l border-slate-800 pt-4 lg:pt-0 lg:pl-8 text-xs text-slate-300">
           <div>
-            <p className="text-[11px] text-slate-400 uppercase font-semibold">Objetivo Total Calculado</p>
-            <p className="text-xl font-black text-emerald-400">
-              {totalGroupTargetCalculated.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
+            <p className="text-slate-400 text-[10px] uppercase font-bold tracking-wider">Comerciales Asignados</p>
+            <p className="font-black text-white text-base mt-0.5">
+              {individualSumCurrency.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
+            </p>
+            <p className="text-[10px] text-slate-400">{teamMembers.length} comerciales</p>
+          </div>
+
+          <div>
+            <p className="text-purple-300 text-[10px] uppercase font-bold tracking-wider">Cuota Personal DC (Directa)</p>
+            <p className="font-black text-purple-300 text-base mt-0.5">
+              {dcPersonalSum.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
+            </p>
+            <p className="text-[10px] text-purple-400/90 font-mono">
+              {dcUser ? (dcUser.seller_code || dcUser.vendor_code || 'Vendedor DC') : 'Sin DC'}
             </p>
           </div>
-          <div className="text-right border-l border-slate-700 pl-4 text-xs text-slate-300">
-            <p>Suma Comerciales: <span className="font-bold text-white">{individualSumCurrency.toLocaleString('es-ES')} €</span></p>
-            <p>Cuota DC/Televenta: <span className="font-bold text-white">{dcExtra.toLocaleString('es-ES')} €</span></p>
+
+          <div>
+            <p className="text-slate-400 text-[10px] uppercase font-bold tracking-wider">Televenta / Extra Grupo</p>
+            <p className="font-black text-white text-base mt-0.5">
+              {dcExtra.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
+            </p>
+            <p className="text-[10px] text-slate-500">Aportación adicional</p>
           </div>
         </div>
       </div>
+
+      {/* BLOQUE DUAL: Tarjeta de Cuota Personal del Director Comercial */}
+      {dcUser && (
+        <div className="bg-linear-to-r from-purple-900 via-indigo-950 to-slate-900 text-white rounded-2xl p-6 shadow-sm border border-purple-800/40 flex flex-col md:flex-row md:items-center justify-between gap-5">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] bg-purple-500 text-white font-bold px-2 py-0.5 rounded uppercase">
+                Ventas Directas Propias
+              </span>
+              <span className="text-xs text-purple-200 font-mono font-semibold">
+                Cód. Vendedor: {dcUser.seller_code || dcUser.vendor_code || 'DC'}
+              </span>
+            </div>
+            <h3 className="text-base font-bold text-white flex items-center gap-2">
+              <UserCheck className="w-5 h-5 text-purple-400" />
+              Cuota Personal Comercial del Director: {dcUser.full_name || dcUser.name}
+            </h3>
+            <p className="text-xs text-purple-200/80 max-w-2xl">
+              Tus ventas directas personales cuentan tanto para tus metas individuales en las 10 líneas de negocio como para el objetivo consolidado de tu equipo.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-4 bg-white/10 p-3.5 rounded-xl backdrop-blur-xs border border-white/10 shrink-0">
+            <div>
+              <p className="text-[10px] text-purple-200 uppercase font-semibold">Total Cuota Personal (€)</p>
+              <p className="text-xl font-black text-white">
+                {dcPersonalSum.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
+              </p>
+              <p className="text-[10px] text-emerald-300 font-semibold">
+                {dcPersonalQuotas['SAGE_CLIENTS'] || 0} Clientes SAGE
+              </p>
+            </div>
+            <button
+              onClick={() => handleOpenEditUser(dcUser)}
+              className="px-4 py-2.5 bg-purple-500 hover:bg-purple-600 text-white font-bold text-xs rounded-xl transition-colors flex items-center gap-1.5 shadow-md"
+            >
+              <Edit3 className="w-4 h-4" />
+              <span>Configurar Mi Cuota Personal</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 3. Tabla de Comerciales Asignados para ver y editar cuotas individuales */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
@@ -246,7 +359,7 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
               Comerciales Asignados a {activeGroupName} ({teamMembers.length})
             </h3>
             <p className="text-xs text-slate-500">
-              Haz clic en "Editar Cuotas" para ajustar los objetivos individuales de cualquier vendedor en Supabase.
+              Haz clic en "Editar Cuotas" para ajustar los objetivos individuales de cualquier vendedor en Supabase con importes exactos.
             </p>
           </div>
         </div>
@@ -255,7 +368,7 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-100/80 text-slate-700 font-bold uppercase">
               <tr>
-                <th className="p-3.5">Comercial</th>
+                <th className="p-3.5">Comercial / Rol</th>
                 <th className="p-3.5">Cód. Vendedor</th>
                 <th className="p-3.5">Ofimática (OFI)</th>
                 <th className="p-3.5">Sistemas TI</th>
@@ -266,10 +379,50 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 font-medium text-slate-600">
+              {/* Fila destacada del Director Comercial */}
+              {dcUser && (
+                <tr className="bg-purple-50/50 hover:bg-purple-50/80 transition-colors border-b-2 border-purple-100">
+                  <td className="p-3.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] bg-purple-600 text-white font-bold px-1.5 py-0.5 rounded uppercase">
+                        Dir. Comercial
+                      </span>
+                      <div>
+                        <div className="font-bold text-slate-900">{dcUser.full_name || dcUser.name}</div>
+                        <div className="text-[11px] text-slate-400">{dcUser.email}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="p-3.5">
+                    <span className="bg-purple-100 text-purple-800 font-mono font-bold px-2 py-0.5 rounded">
+                      {dcUser.seller_code || dcUser.vendor_code || 'DC'}
+                    </span>
+                  </td>
+                  <td className="p-3.5 font-semibold">{(dcPersonalQuotas['OFI'] || 0).toLocaleString('es-ES')} €</td>
+                  <td className="p-3.5 font-semibold">{(dcPersonalQuotas['SISTEMAS'] || 0).toLocaleString('es-ES')} €</td>
+                  <td className="p-3.5 font-semibold">{(dcPersonalQuotas['DW'] || 0).toLocaleString('es-ES')} €</td>
+                  <td className="p-3.5 font-black text-purple-900">
+                    {dcPersonalSum.toLocaleString('es-ES')} €
+                  </td>
+                  <td className="p-3.5 text-emerald-700 font-bold">
+                    {dcPersonalQuotas['SAGE_CLIENTS'] || 0} clientes
+                  </td>
+                  <td className="p-3.5 text-right">
+                    <button
+                      onClick={() => handleOpenEditUser(dcUser)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-lg transition-colors shadow-xs"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      <span>Editar Mi Cuota</span>
+                    </button>
+                  </td>
+                </tr>
+              )}
+
               {teamMembers.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="p-8 text-center text-slate-400 font-medium">
-                    No hay comerciales asignados a este equipo en este momento.
+                    No hay otros comerciales asignados a este equipo en este momento.
                   </td>
                 </tr>
               ) : (
@@ -317,15 +470,15 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
         </div>
       </div>
 
-      {/* 3. Formulario de Configuración de Objetivos Propios del Director Comercial */}
+      {/* 4. Formulario de Configuración de Objetivos y Bono Anual del Director Comercial */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-6">
         <div className="border-b border-slate-100 pb-4">
           <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
             <Award className="w-5 h-5 text-amber-500" />
-            Configuración de Métricas Estratégicas y Bono Anual del DC
+            Configuración de Métricas Estratégicas y Bono de Dirección (Hasta 40.000 €)
           </h3>
           <p className="text-xs text-slate-500 mt-1">
-            Define el bono base anual y las 4 submétricas clave del plan de remuneración directivo de Solitium.
+            Define el bono base anual y las submétricas clave del plan de compensación directivo de Solitium sin restricciones de múltiplos.
           </p>
         </div>
 
@@ -334,16 +487,17 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
             {/* Bono Anual Base */}
             <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
               <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider mb-1">
-                Bono Anual Base (€)
+                Bono Anual de Dirección Base (€)
               </label>
-              <p className="text-[11px] text-slate-500 mb-2">Importe base sujeto a escala de facturación (90%-130%+)</p>
+              <p className="text-[11px] text-slate-500 mb-2">Importe base directivo sujeto a escala de facturación (hasta 40.000 €)</p>
               <div className="relative">
                 <input
                   type="number"
-                  step="100"
-                  value={groupTarget.annual_base_bonus}
-                  onChange={(e) => setGroupTarget({ ...groupTarget, annual_base_bonus: parseFloat(e.target.value) || 0 })}
-                  className="w-full text-sm font-bold bg-white border border-slate-300 rounded-lg p-2.5 pr-8 focus:ring-2 focus:ring-solitium-500"
+                  step="any"
+                  min="0"
+                  value={groupTarget.annual_base_bonus ?? 40000}
+                  onChange={(e) => setGroupTarget({ ...groupTarget, annual_base_bonus: cleanParseNumber(e.target.value) })}
+                  className="w-full text-sm font-bold bg-white border border-slate-300 rounded-lg p-2.5 pr-8 focus:ring-2 focus:ring-solitium-500 focus:outline-none"
                 />
                 <span className="absolute right-3 top-2.5 text-xs font-bold text-slate-400">€</span>
               </div>
@@ -358,10 +512,11 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
               <div className="relative">
                 <input
                   type="number"
-                  step="0.5"
-                  value={groupTarget.managed_services_pct}
-                  onChange={(e) => setGroupTarget({ ...groupTarget, managed_services_pct: parseFloat(e.target.value) || 0 })}
-                  className="w-full text-sm font-bold bg-white border border-slate-300 rounded-lg p-2.5 pr-8 focus:ring-2 focus:ring-solitium-500"
+                  step="any"
+                  min="0"
+                  value={groupTarget.managed_services_pct ?? 0}
+                  onChange={(e) => setGroupTarget({ ...groupTarget, managed_services_pct: cleanParseNumber(e.target.value) })}
+                  className="w-full text-sm font-bold bg-white border border-slate-300 rounded-lg p-2.5 pr-8 focus:ring-2 focus:ring-solitium-500 focus:outline-none"
                 />
                 <span className="absolute right-3 top-2.5 text-xs font-bold text-slate-400">%</span>
               </div>
@@ -376,10 +531,11 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
               <div className="relative">
                 <input
                   type="number"
-                  step="1"
-                  value={groupTarget.new_client_units}
-                  onChange={(e) => setGroupTarget({ ...groupTarget, new_client_units: parseInt(e.target.value) || 0 })}
-                  className="w-full text-sm font-bold bg-white border border-slate-300 rounded-lg p-2.5 pr-14 focus:ring-2 focus:ring-solitium-500"
+                  step="any"
+                  min="0"
+                  value={groupTarget.new_client_units ?? 0}
+                  onChange={(e) => setGroupTarget({ ...groupTarget, new_client_units: Math.round(cleanParseNumber(e.target.value)) })}
+                  className="w-full text-sm font-bold bg-white border border-slate-300 rounded-lg p-2.5 pr-14 focus:ring-2 focus:ring-solitium-500 focus:outline-none"
                 />
                 <span className="absolute right-3 top-2.5 text-xs font-bold text-slate-400">Clientes</span>
               </div>
@@ -394,10 +550,11 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
               <div className="relative">
                 <input
                   type="number"
-                  step="1"
-                  value={groupTarget.turbo_sage_leads}
-                  onChange={(e) => setGroupTarget({ ...groupTarget, turbo_sage_leads: parseInt(e.target.value) || 0 })}
-                  className="w-full text-sm font-bold bg-white border border-slate-300 rounded-lg p-2.5 pr-12 focus:ring-2 focus:ring-solitium-500"
+                  step="any"
+                  min="0"
+                  value={groupTarget.turbo_sage_leads ?? 0}
+                  onChange={(e) => setGroupTarget({ ...groupTarget, turbo_sage_leads: Math.round(cleanParseNumber(e.target.value)) })}
+                  className="w-full text-sm font-bold bg-white border border-slate-300 rounded-lg p-2.5 pr-12 focus:ring-2 focus:ring-solitium-500 focus:outline-none"
                 />
                 <span className="absolute right-3 top-2.5 text-xs font-bold text-slate-400">Leads</span>
               </div>
@@ -412,28 +569,30 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
               <div className="relative">
                 <input
                   type="number"
-                  step="500"
-                  value={groupTarget.turbo_bol_svm}
-                  onChange={(e) => setGroupTarget({ ...groupTarget, turbo_bol_svm: parseFloat(e.target.value) || 0 })}
-                  className="w-full text-sm font-bold bg-white border border-slate-300 rounded-lg p-2.5 pr-8 focus:ring-2 focus:ring-solitium-500"
+                  step="any"
+                  min="0"
+                  value={groupTarget.turbo_bol_svm ?? 0}
+                  onChange={(e) => setGroupTarget({ ...groupTarget, turbo_bol_svm: cleanParseNumber(e.target.value) })}
+                  className="w-full text-sm font-bold bg-white border border-slate-300 rounded-lg p-2.5 pr-8 focus:ring-2 focus:ring-solitium-500 focus:outline-none"
                 />
                 <span className="absolute right-3 top-2.5 text-xs font-bold text-slate-400">€</span>
               </div>
             </div>
 
-            {/* Cuota Asignada Propia DC / Televenta */}
+            {/* Cuota Asignada Extra DC / Televenta */}
             <div className="p-4 bg-purple-50/60 rounded-xl border border-purple-200">
               <label className="block text-xs font-bold text-purple-900 uppercase tracking-wider mb-1">
-                Cuota Asignada Propia DC / Televenta (€)
+                Aportación Televenta / Extra Grupo (€)
               </label>
-              <p className="text-[11px] text-purple-700 mb-2">Aportación directa que se suma al objetivo del grupo</p>
+              <p className="text-[11px] text-purple-700 mb-2">Aportación centralizada que se suma al objetivo del grupo</p>
               <div className="relative">
                 <input
                   type="number"
-                  step="1000"
-                  value={groupTarget.dc_extra_quota}
-                  onChange={(e) => setGroupTarget({ ...groupTarget, dc_extra_quota: parseFloat(e.target.value) || 0 })}
-                  className="w-full text-sm font-bold bg-white border border-purple-300 rounded-lg p-2.5 pr-8 focus:ring-2 focus:ring-purple-500"
+                  step="any"
+                  min="0"
+                  value={groupTarget.dc_extra_quota ?? 0}
+                  onChange={(e) => setGroupTarget({ ...groupTarget, dc_extra_quota: cleanParseNumber(e.target.value) })}
+                  className="w-full text-sm font-bold bg-white border border-purple-300 rounded-lg p-2.5 pr-8 focus:ring-2 focus:ring-purple-500 focus:outline-none"
                 />
                 <span className="absolute right-3 top-2.5 text-xs font-bold text-purple-500">€</span>
               </div>
@@ -447,23 +606,30 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
               className="flex items-center gap-2 px-6 py-2.5 bg-solitium-500 hover:bg-solitium-600 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-md transition-all"
             >
               <Save className="w-4 h-4" />
-              <span>{savingTarget ? 'Guardando en Supabase...' : 'Guardar Configuración DC'}</span>
+              <span>{savingTarget ? 'Guardando en Supabase...' : 'Guardar Configuración Consolidada DC'}</span>
             </button>
           </div>
         </form>
       </div>
 
-      {/* Modal para editar cuotas de un comercial del equipo */}
+      {/* Modal para editar cuotas individuales (Comercial o Director) */}
       {selectedUserForEdit && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden border border-slate-200">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95">
             <div className="p-5 bg-slate-900 text-white flex items-center justify-between">
               <div>
-                <h4 className="text-base font-bold">
-                  Editar Cuotas de: {selectedUserForEdit.name}
-                </h4>
+                <div className="flex items-center gap-2">
+                  <h4 className="text-base font-bold">
+                    Editar Cuotas: {selectedUserForEdit.full_name || selectedUserForEdit.name}
+                  </h4>
+                  {selectedUserForEdit.role === 'director_comercial' && (
+                    <span className="text-[10px] bg-purple-500 text-white font-bold px-2 py-0.5 rounded">
+                      Dir. Comercial
+                    </span>
+                  )}
+                </div>
                 <p className="text-xs text-slate-400">
-                  Código: {selectedUserForEdit.vendor_code} &bull; Ejercicio: {fiscalYear}
+                  Código: {selectedUserForEdit.seller_code || selectedUserForEdit.vendor_code} &bull; Ejercicio: {fiscalYear}
                 </p>
               </div>
               <button 
@@ -476,23 +642,24 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
 
             <div className="p-6 overflow-y-auto space-y-4 flex-1">
               {BUSINESS_LINES.map(line => (
-                <div key={line.id} className="flex items-center justify-between gap-4 p-2 bg-slate-50 rounded-lg">
+                <div key={line.id} className="flex items-center justify-between gap-4 p-2.5 bg-slate-50 hover:bg-slate-100/70 rounded-xl border border-slate-200">
                   <div className="flex-1">
                     <p className="text-xs font-bold text-slate-800">{line.name} ({line.shortName})</p>
                     <p className="text-[10px] text-slate-400">{line.group}</p>
                   </div>
-                  <div className="w-40 relative">
+                  <div className="w-44 relative">
                     <input
                       type="number"
-                      step={line.isCurrency ? "100" : "1"}
-                      value={editedUserQuotas[line.id] || 0}
+                      step="any"
+                      min="0"
+                      value={editedUserQuotas[line.id] ?? 0}
                       onChange={(e) => setEditedUserQuotas({
                         ...editedUserQuotas,
-                        [line.id]: parseFloat(e.target.value) || 0
+                        [line.id]: cleanParseNumber(e.target.value)
                       })}
-                      className="w-full text-xs font-semibold bg-white border border-slate-300 rounded p-1.5 pr-8 text-right"
+                      className="w-full text-xs font-bold bg-white border border-slate-300 rounded-lg p-2 pr-9 text-right focus:ring-2 focus:ring-solitium-500 focus:outline-none"
                     />
-                    <span className="absolute right-2 top-1.5 text-[10px] font-bold text-slate-400">
+                    <span className="absolute right-2.5 top-2 text-[10px] font-bold text-slate-400">
                       {line.unit}
                     </span>
                   </div>
@@ -510,10 +677,10 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
               <button
                 onClick={handleSaveUserQuotas}
                 disabled={savingCommercial}
-                className="flex items-center gap-2 px-5 py-2 bg-solitium-500 hover:bg-solitium-600 text-white font-bold text-xs rounded-lg shadow-sm"
+                className="flex items-center gap-2 px-5 py-2.5 bg-solitium-500 hover:bg-solitium-600 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-sm transition-colors"
               >
                 <Save className="w-4 h-4" />
-                <span>{savingCommercial ? 'Guardando...' : 'Actualizar en Supabase'}</span>
+                <span>{savingCommercial ? 'Guardando en Supabase...' : 'Guardar en Supabase'}</span>
               </button>
             </div>
           </div>
