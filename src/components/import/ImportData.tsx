@@ -132,128 +132,123 @@ export const ImportData: React.FC<ImportDataProps> = ({
       ) || workbook.SheetNames[0];
 
       const worksheet = workbook.Sheets[targetSheetName];
-      const jsonData = XLSX.utils.sheet_to_json<Record<string, any>>(worksheet, { defval: '' });
+      const rawMatrix = XLSX.utils.sheet_to_json<any[]>(worksheet, { header: 1, defval: '', blankrows: false });
 
-      if (!jsonData || jsonData.length === 0) {
+      if (!rawMatrix || rawMatrix.length === 0) {
         throw new Error('La hoja seleccionada no contiene filas con datos válidos.');
       }
 
+      // Escanea las primeras filas del Excel hasta encontrar la que contenga la celda con 'Pago-a Cód. Vendedor'
+      let headerRowIndex = -1;
+      for (let r = 0; r < Math.min(10, rawMatrix.length); r++) {
+        const row = rawMatrix[r];
+        if (Array.isArray(row)) {
+          const hasVendor = row.some((cell: any) => {
+            const s = String(cell || '').toLowerCase().trim();
+            return s.includes('pago-a cód. vendedor') || 
+                   s.includes('pago-a cod. vendedor') || 
+                   s.includes('pago-a') ||
+                   (s.includes('vendedor') && (s.includes('cód') || s.includes('cod')));
+          });
+          if (hasVendor) {
+            headerRowIndex = r;
+            break;
+          }
+        }
+      }
+
+      // Búsqueda de respaldo si no contiene 'pago-a' explícito
+      if (headerRowIndex === -1) {
+        for (let r = 0; r < Math.min(10, rawMatrix.length); r++) {
+          const row = rawMatrix[r];
+          if (Array.isArray(row)) {
+            const hasCommonCols = row.some((cell: any) => {
+              const s = String(cell || '').toLowerCase().trim();
+              return s.includes('vendedor') || s.includes('documento') || s.includes('comisión') || s.includes('comision');
+            });
+            if (hasCommonCols) {
+              headerRowIndex = r;
+              break;
+            }
+          }
+        }
+      }
+
+      if (headerRowIndex === -1) {
+        headerRowIndex = 0;
+      }
+
+      const headers = rawMatrix[headerRowIndex].map((h: any) => String(h || '').trim());
+
+      const findColIdx = (predicates: string[]) => {
+        return headers.findIndex(h => {
+          const lh = h.toLowerCase();
+          return predicates.some(p => lh.includes(p.toLowerCase()));
+        });
+      };
+
+      const vendorColIdx = findColIdx(['pago-a cód. vendedor', 'pago-a cod. vendedor', 'pago-a', 'cód. vendedor', 'cod. vendedor', 'vendedor']);
+      const club100ColIdx = findColIdx(['club 100%']);
+      const lineCodeColIdx = findColIdx(['linea código', 'linea codigo', 'código línea', 'codigo linea']);
+      const genericLineColIdx = findColIdx(['línea', 'linea', 'tipo producto']);
+      const amountColIdx = findColIdx(['base comisión manual', 'base comision manual', 'base comisión', 'base comision', 'importe', 'base']);
+      const clientTypeColIdx = findColIdx(['cliente / prospecto', 'cliente/prospecto', 'prospecto', 'tipo cliente']);
+      const rentingColIdx = findColIdx(['nº operación renting', 'no operación renting', 'operación renting', 'operacion renting', 'renting']);
+      const docColIdx = findColIdx(['nº documento', 'no documento', 'número documento', 'numero documento', 'documento', 'factura']);
+      const dateColIdx = findColIdx(['fecha documento', 'fecha registro', 'fecha']);
+      const conceptColIdx = findColIdx(['concepto', 'categoría', 'categoria', 'familia', 'descripción', 'descripcion']);
+
+      const dataRows = rawMatrix.slice(headerRowIndex + 1);
       const validSalesRecords: RawDBSaleRecord[] = [];
-      let skippedCount = 0;
+      let unmappedCount = 0;
       const unmappedVendors = new Set<string>();
 
-      jsonData.forEach((row, index) => {
-        // Encontrar columna 'Pago-a Cód. Vendedor'
-        const vendorKey = Object.keys(row).find(k => {
-          const lk = k.toLowerCase();
-          return lk.includes('pago-a cód. vendedor') || 
-                 lk.includes('pago-a cod. vendedor') ||
-                 lk.includes('pago-a') ||
-                 lk.includes('cód. vendedor') || 
-                 lk.includes('cod. vendedor') || 
-                 lk.includes('vendedor');
-        });
+      dataRows.forEach((row, index) => {
+        if (!Array.isArray(row)) return;
 
-        const rawVendor = vendorKey ? String(row[vendorKey]).trim().toUpperCase() : '';
+        const rawVendor = vendorColIdx !== -1 ? String(row[vendorColIdx] || '').trim().toUpperCase() : '';
+        const rawAmount = amountColIdx !== -1 ? cleanParseAmount(row[amountColIdx]) : 0;
+        const rawDoc = docColIdx !== -1 ? String(row[docColIdx] || '').trim() : '';
 
-        // 2. Mapear cada fila por su 'Pago-a Cód. Vendedor'
-        const matchedUser = sellerCodeMap.get(rawVendor);
-
-        // 3. Si no existe en profiles, omite la fila o loguea aviso para que no aborte
-        if (!matchedUser) {
-          skippedCount++;
-          if (rawVendor) unmappedVendors.add(rawVendor);
+        // Ignorar filas totalmente vacías
+        if (!rawVendor && rawAmount === 0 && !rawDoc) {
           return;
         }
 
-        // 'Club 100%' / 'Linea Código'
-        const lineKey = Object.keys(row).find(k => {
-          const lk = k.toLowerCase();
-          return lk.includes('club 100%') || 
-                 lk.includes('linea código') || 
-                 lk.includes('linea codigo') || 
-                 lk.includes('línea') || 
-                 lk.includes('linea') || 
-                 lk.includes('tipo producto');
-        });
-        const rawLine = lineKey ? String(row[lineKey]).trim() : '';
-        const mappedLineId = mapRawLineToId(rawLine);
+        // Mapear por seller_code en profiles. Si no coincide, asignar commercial_id = null (no omitir ni abortar)
+        const matchedUser = rawVendor ? sellerCodeMap.get(rawVendor) : undefined;
+        const commercialId = matchedUser ? matchedUser.id : null;
 
-        // 'Base comisión manual'
-        const amountKey = Object.keys(row).find(k => {
-          const lk = k.toLowerCase();
-          return lk.includes('base comisión manual') || 
-                 lk.includes('base comision manual') || 
-                 lk.includes('base comisión') || 
-                 lk.includes('base comision') || 
-                 lk.includes('importe') || 
-                 lk.includes('base');
-        });
-        const numericAmount = amountKey ? cleanParseAmount(row[amountKey]) : 0;
+        if (!matchedUser && rawVendor) {
+          unmappedCount++;
+          unmappedVendors.add(rawVendor);
+        }
 
-        // 'Cliente / Prospecto' -> true si es 'Prospecto', false si es 'Cliente'
-        const clientTypeKey = Object.keys(row).find(k => {
-          const lk = k.toLowerCase();
-          return lk.includes('cliente / prospecto') || 
-                 lk.includes('cliente/prospecto') || 
-                 lk.includes('prospecto') || 
-                 lk.includes('tipo cliente');
-        });
-        const rawClientType = clientTypeKey ? String(row[clientTypeKey]).toLowerCase() : '';
+        const rawClub100 = club100ColIdx !== -1 ? String(row[club100ColIdx] || '').trim() : '';
+        const rawLineCode = lineCodeColIdx !== -1 ? String(row[lineCodeColIdx] || '').trim() : '';
+        const rawGenericLine = genericLineColIdx !== -1 ? String(row[genericLineColIdx] || '').trim() : '';
+        const mappedLineId = mapRawLineToId(rawClub100 || rawGenericLine, rawLineCode);
+
+        const rawClientType = clientTypeColIdx !== -1 ? String(row[clientTypeColIdx] || '').toLowerCase() : '';
         const isNewClient = rawClientType.includes('prospecto') || rawClientType.includes('nuevo');
 
-        // 'Nº operación renting' -> true si tiene datos no vacíos, false si vacío
-        const rentingKey = Object.keys(row).find(k => {
-          const lk = k.toLowerCase();
-          return lk.includes('operación renting') || 
-                 lk.includes('operacion renting') || 
-                 lk.includes('nº operación renting') || 
-                 lk.includes('renting');
-        });
-        const isFinanced = rentingKey ? String(row[rentingKey]).trim().length > 0 : false;
+        const isFinanced = rentingColIdx !== -1 ? String(row[rentingColIdx] || '').trim().length > 0 : false;
 
-        // 'Nº documento'
-        const invoiceKey = Object.keys(row).find(k => {
-          const lk = k.toLowerCase();
-          return lk.includes('nº documento') || 
-                 lk.includes('no documento') || 
-                 lk.includes('documento') || 
-                 lk.includes('factura');
-        });
-        const invoiceNumber = invoiceKey && row[invoiceKey] ? String(row[invoiceKey]).trim() : `DOC-${index + 1}`;
+        const invoiceNumber = rawDoc || `DOC-${index + 1}`;
+        const saleDate = dateColIdx !== -1 ? parseExcelDate(row[dateColIdx]) : new Date().toISOString().split('T')[0];
 
-        // 'Fecha documento'
-        const dateKey = Object.keys(row).find(k => {
-          const lk = k.toLowerCase();
-          return lk.includes('fecha documento') || 
-                 lk.includes('fecha registro') || 
-                 lk.includes('fecha');
-        });
-        const saleDate = dateKey ? parseExcelDate(row[dateKey]) : new Date().toISOString().split('T')[0];
-
-        // 'is_managed_service' -> true si concepto/categoría es servicio gestionado o conectividad, o si línea es MI/SW
-        const conceptKey = Object.keys(row).find(k => {
-          const lk = k.toLowerCase();
-          return lk.includes('concepto') || 
-                 lk.includes('categoría') || 
-                 lk.includes('categoria') || 
-                 lk.includes('familia') || 
-                 lk.includes('descripción') || 
-                 lk.includes('descripcion');
-        });
-        const conceptStr = conceptKey ? String(row[conceptKey]).toLowerCase() : '';
+        const conceptStr = conceptColIdx !== -1 ? String(row[conceptColIdx] || '').toLowerCase() : '';
         const isManagedService = conceptStr.includes('servicio gestionado') || 
                                  conceptStr.includes('conectividad') || 
                                  conceptStr.includes('mantenimiento') ||
                                  mappedLineId === 'MI' || 
                                  mappedLineId === 'SW';
 
-        // Columnas exactas de public.sales_records
         validSalesRecords.push({
-          commercial_id: matchedUser.id,
+          commercial_id: commercialId,
           line_id: mappedLineId,
           fiscal_year: fiscalYear || '2026-2027',
-          amount: numericAmount,
+          amount: rawAmount,
           discount_rate: 0,
           is_managed_service: isManagedService,
           is_new_client: isNewClient,
@@ -264,23 +259,21 @@ export const ImportData: React.FC<ImportDataProps> = ({
       });
 
       if (validSalesRecords.length === 0) {
-        throw new Error('No se encontraron filas con códigos de vendedor coincidentes con perfiles registrados.');
+        throw new Error('No se encontraron registros de ventas válidos en el archivo.');
       }
 
       setRecords(validSalesRecords);
 
-      // 4. Inserta en Supabase mediante batches de 50 registros
+      // Inserción en Supabase en lotes de 50
       const saveResult = await saveSalesRecordsDirect(validSalesRecords);
 
       if (saveResult.success) {
-        // 5. Mensaje de confirmación exacto
         setSuccessMessage(`Procesadas ${validSalesRecords.length} líneas con éxito. Ventas sumadas a cada comercial.`);
         
-        if (skippedCount > 0) {
-          setWarningMessage(`Aviso: ${skippedCount} filas se omitieron por corresponder a códigos de vendedor no registrados en profiles (${Array.from(unmappedVendors).slice(0, 5).join(', ')}${unmappedVendors.size > 5 ? '...' : ''}).`);
+        if (unmappedCount > 0) {
+          setWarningMessage(`Aviso: ${unmappedCount} filas se asignaron sin comercial vinculado (código no registrado en profiles: ${Array.from(unmappedVendors).slice(0, 5).join(', ')}${unmappedVendors.size > 5 ? '...' : ''}).`);
         }
 
-        // 6. Recalcular al instante las cifras acumuladas de cada comercial, del equipo y bonos DC
         onImportComplete();
       } else {
         setErrorMessage(`Error guardando en Supabase: ${saveResult.error || 'Fallo de inserción'}`);

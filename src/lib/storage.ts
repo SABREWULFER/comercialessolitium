@@ -360,9 +360,22 @@ export async function getCommercialQuotas(userId: string, fiscalYear: string): P
         .eq('fiscal_year', fiscalYear);
 
       if (!error && data && data.length > 0) {
-        data.forEach((row: CommercialQuota) => {
-          result[row.line_id] = Number(row.target_value) || 0;
+        data.forEach((row: any) => {
+          if (row.line_id && result.hasOwnProperty(row.line_id)) {
+            result[row.line_id as BusinessLineId] = Number(row.target_value) || 0;
+          }
         });
+
+        // Guardar copia fresca en caché local
+        const localList = getLocalData<CommercialQuota[]>(LOCAL_STORAGE_QUOTAS_KEY, []);
+        const filtered = localList.filter(q => !(q.user_id === userId && q.fiscal_year === fiscalYear));
+        const syncRecords: CommercialQuota[] = data.map((row: any) => ({
+          user_id: userId,
+          fiscal_year: fiscalYear,
+          line_id: row.line_id,
+          target_value: Number(row.target_value) || 0,
+        }));
+        setLocalData(LOCAL_STORAGE_QUOTAS_KEY, [...filtered, ...syncRecords]);
         return result;
       }
     } catch (err) {
@@ -373,7 +386,9 @@ export async function getCommercialQuotas(userId: string, fiscalYear: string): P
   const localList = getLocalData<CommercialQuota[]>(LOCAL_STORAGE_QUOTAS_KEY, []);
   const userQuotas = localList.filter(q => q.user_id === userId && q.fiscal_year === fiscalYear);
   userQuotas.forEach(q => {
-    result[q.line_id] = Number(q.target_value) || 0;
+    if (q.line_id && result.hasOwnProperty(q.line_id)) {
+      result[q.line_id] = Number(q.target_value) || 0;
+    }
   });
 
   return result;
@@ -392,6 +407,7 @@ export async function saveCommercialQuotas(
     updated_at: new Date().toISOString(),
   }));
 
+  // Guardar siempre en local storage para que el valor persista en el navegador
   const localList = getLocalData<CommercialQuota[]>(LOCAL_STORAGE_QUOTAS_KEY, []);
   const filtered = localList.filter(q => !(q.user_id === userId && q.fiscal_year === fiscalYear));
   setLocalData(LOCAL_STORAGE_QUOTAS_KEY, [...filtered, ...recordsToUpsert]);
@@ -403,7 +419,20 @@ export async function saveCommercialQuotas(
         .upsert(recordsToUpsert, { onConflict: 'user_id,fiscal_year,line_id' });
 
       if (error) {
-        console.error('Error al guardar en Supabase:', error);
+        console.warn('Upsert de commercial_quotas falló, intentando delete + insert:', error.message);
+        // Fallback por si la restricción en Supabase tiene diferente configuración
+        const { error: delError } = await supabase
+          .from('commercial_quotas')
+          .delete()
+          .eq('user_id', userId)
+          .eq('fiscal_year', fiscalYear);
+
+        if (!delError) {
+          const { error: insError } = await supabase
+            .from('commercial_quotas')
+            .insert(recordsToUpsert);
+          if (!insError) return true;
+        }
         return false;
       }
       return true;
@@ -488,7 +517,7 @@ function normalizeSaleRecord(s: any): SalesRecord {
 }
 
 export interface RawDBSaleRecord {
-  commercial_id: string; // uuid de public.profiles
+  commercial_id: string | null; // uuid de public.profiles o null si no existe vendedor registrado
   line_id: string;
   fiscal_year: string;
   amount: number;

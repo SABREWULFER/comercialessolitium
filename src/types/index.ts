@@ -92,7 +92,7 @@ export interface GroupTarget {
 
 export interface SalesRecord {
   id?: string;
-  commercial_id: string; // uuid de public.profiles
+  commercial_id: string | null; // uuid de public.profiles o null
   user_id?: string; // compatibilidad
   vendor_code?: string; // compatibilidad
   line_id: BusinessLineId;
