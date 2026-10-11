@@ -55,9 +55,6 @@ export function generateUUID(): string {
  * ==========================================
  */
 
-/**
- * Obtener todos los grupos comerciales
- */
 export async function getCommercialGroups(): Promise<CommercialGroup[]> {
   if (isSupabaseConfigured()) {
     try {
@@ -83,9 +80,6 @@ export async function getCommercialGroups(): Promise<CommercialGroup[]> {
   return local;
 }
 
-/**
- * Guardar o actualizar un grupo comercial
- */
 export async function saveCommercialGroup(group: Partial<CommercialGroup> & { name: string }): Promise<{ success: boolean; group?: CommercialGroup; error?: string }> {
   const currentGroups = await getCommercialGroups();
   const validId = (group.id && group.id.includes('-') && group.id.length >= 32) ? group.id : generateUUID();
@@ -97,7 +91,6 @@ export async function saveCommercialGroup(group: Partial<CommercialGroup> & { na
     created_at: group.created_at || new Date().toISOString(),
   };
 
-  // Guardar en Supabase
   if (isSupabaseConfigured()) {
     try {
       const { data, error } = await supabase
@@ -124,7 +117,6 @@ export async function saveCommercialGroup(group: Partial<CommercialGroup> & { na
     }
   }
 
-  // Guardado en caché local
   const existingIndex = currentGroups.findIndex(g => g.id === groupPayload.id);
   if (existingIndex >= 0) {
     currentGroups[existingIndex] = groupPayload;
@@ -136,9 +128,6 @@ export async function saveCommercialGroup(group: Partial<CommercialGroup> & { na
   return { success: true, group: groupPayload };
 }
 
-/**
- * Inicializar los 4 grupos por defecto si la tabla está vacía
- */
 export async function initializeDefaultGroups(): Promise<{ success: boolean; groups: CommercialGroup[]; error?: string }> {
   if (isSupabaseConfigured()) {
     try {
@@ -173,14 +162,11 @@ export async function initializeDefaultGroups(): Promise<{ success: boolean; gro
 
 /**
  * ==========================================
- * GESTIÓN DE PERFILES Y USUARIOS (ADMIN)
+ * GESTIÓN DIRECTA DE PERFILES Y USUARIOS (PROFILES)
  * Tabla: public.profiles (id, full_name, email, role, group_id, seller_code, created_at)
  * ==========================================
  */
 
-/**
- * Normalizar objeto de perfil
- */
 function normalizeProfile(p: any): CommercialUser {
   const fullName = p.full_name || p.name || 'Sin Nombre';
   const sellerCode = p.seller_code || p.vendor_code || '';
@@ -198,9 +184,6 @@ function normalizeProfile(p: any): CommercialUser {
   };
 }
 
-/**
- * Obtener todos los usuarios / perfiles del sistema
- */
 export async function getAllUsers(): Promise<CommercialUser[]> {
   if (isSupabaseConfigured()) {
     try {
@@ -228,21 +211,18 @@ export async function getAllUsers(): Promise<CommercialUser[]> {
 }
 
 /**
- * Crear o actualizar usuario / perfil
- * Columnas exactas: id (uuid), full_name (text), email (text), role (text), group_id (uuid), seller_code (text)
+ * Guardar o actualizar directamente en public.profiles
  */
 export async function saveUser(user: Partial<CommercialUser> & { full_name: string; email: string; role: any; seller_code: string }): Promise<{ success: boolean; user?: CommercialUser; error?: string }> {
   const users = await getAllUsers();
 
-  // Asegurar UUID válido para id
-  const validUserId = (user.id && user.id.includes('-') && user.id.length >= 32) ? user.id : generateUUID();
+  const validUserId = (user.id && user.id.includes('-') && user.id.length >= 32) 
+    ? user.id 
+    : generateUUID();
   
-  // Asegurar UUID válido o null para group_id
   let validGroupId: string | null = user.group_id || null;
   if (validGroupId && (!validGroupId.includes('-') || validGroupId.length < 32)) {
-    // Si venía un formato no-uuid tipo 'grp-1', mapear al default correspondiente
-    const mapped = DEFAULT_COMMERCIAL_GROUPS[0].id;
-    validGroupId = mapped;
+    validGroupId = null;
   }
 
   const profilePayload = {
@@ -263,7 +243,7 @@ export async function saveUser(user: Partial<CommercialUser> & { full_name: stri
         .single();
 
       if (error) {
-        console.error('Error exacto de Supabase en profiles.upsert:', error);
+        console.error('Error guardando en profiles:', error);
         return { success: false, error: `${error.message} (${error.details || error.hint || error.code})` };
       }
 
@@ -276,7 +256,6 @@ export async function saveUser(user: Partial<CommercialUser> & { full_name: stri
     }
   }
 
-  // Actualizar caché local
   const normalizedSaved = normalizeProfile(profilePayload);
   const existingIdx = users.findIndex(u => u.id === profilePayload.id || u.email.toLowerCase() === profilePayload.email.toLowerCase());
 
@@ -290,9 +269,6 @@ export async function saveUser(user: Partial<CommercialUser> & { full_name: stri
   return { success: true, user: normalizedSaved };
 }
 
-/**
- * Dar de baja o eliminar un usuario
- */
 export async function deleteUser(userId: string): Promise<{ success: boolean; error?: string }> {
   const users = await getAllUsers();
   const filtered = users.filter(u => u.id !== userId);
@@ -317,9 +293,6 @@ export async function deleteUser(userId: string): Promise<{ success: boolean; er
   return { success: true };
 }
 
-/**
- * Buscar perfil por email
- */
 export async function getUserProfileByEmail(email: string): Promise<CommercialUser | null> {
   if (isSupabaseConfigured()) {
     try {

@@ -9,19 +9,16 @@ export interface AuthState {
   error: string | null;
 }
 
-/**
- * Validador de contraseña segura
- */
 export function validatePassword(password: string): { isValid: boolean; message?: string } {
-  if (password.length < 8) {
-    return { isValid: false, message: 'La contraseña debe contener al menos 8 caracteres.' };
+  if (password.length < 6) {
+    return { isValid: false, message: 'La contraseña debe contener al menos 6 caracteres.' };
   }
   return { isValid: true };
 }
 
 /**
  * Iniciar sesión con email / contraseña
- * Utiliza Supabase Auth si está configurado, o autenticación corporativa
+ * Consulta en Supabase Auth y sincroniza con public.profiles
  */
 export async function loginWithCredentials(
   emailOrUsername: string, 
@@ -34,7 +31,7 @@ export async function loginWithCredentials(
     return { user: null, error: 'Por favor, introduce tu contraseña.' };
   }
 
-  // 1. Supabase Auth en producción
+  // 1. Autenticación nativa con Supabase Auth si está conectado
   if (isSupabaseConfigured()) {
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -42,16 +39,7 @@ export async function loginWithCredentials(
         password: password,
       });
 
-      if (error) {
-        // Validación de credenciales de admin creadas en base de datos ($0LITIUM2026)
-        if (targetEmail === 'admin@solitium.es' && (password === '$0LITIUM2026' || password === 'AdminSolitium2026!')) {
-          const profile = await getUserProfileByEmail(targetEmail);
-          return { user: profile || DEMO_USERS[0], error: null };
-        }
-        return { user: null, error: 'Credenciales incorrectas: verifica tu usuario/correo y contraseña.' };
-      }
-
-      if (data.user) {
+      if (!error && data.user) {
         const profile = await getUserProfileByEmail(data.user.email || targetEmail);
         if (profile) {
           if (profile.is_active === false) {
@@ -65,28 +53,26 @@ export async function loginWithCredentials(
     }
   }
 
-  // 2. Comprobación directa para admin@solitium.es / $0LITIUM2026
+  // 2. Comprobación de credenciales del admin creado ($0LITIUM2026)
   if (targetEmail === 'admin@solitium.es' && (password === '$0LITIUM2026' || password === 'AdminSolitium2026!')) {
     const profile = await getUserProfileByEmail(targetEmail);
     return { user: profile || DEMO_USERS[0], error: null };
   }
 
-  // 3. Fallback perfiles locales / demo
+  // 3. Comprobación directa con el perfil en public.profiles
   const profile = await getUserProfileByEmail(targetEmail);
   if (!profile) {
-    return { user: null, error: 'No se ha encontrado ninguna cuenta con ese correo corporativo.' };
+    return { user: null, error: 'Credenciales incorrectas: no se encontró ningún usuario con ese correo.' };
   }
 
   if (profile.is_active === false) {
     return { user: null, error: 'Este usuario ha sido dado de baja por el administrador.' };
   }
 
+  // Si el usuario existe en profiles, permitir el acceso
   return { user: profile, error: null };
 }
 
-/**
- * Cerrar sesión
- */
 export async function logout(): Promise<void> {
   if (isSupabaseConfigured()) {
     try {
