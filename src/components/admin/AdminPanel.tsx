@@ -17,7 +17,10 @@ import {
   UserX,
   Plus,
   RefreshCw,
-  FolderTree
+  FolderTree,
+  Lock,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { CommercialUser, UserRole, CommercialGroup } from '@/types';
 import { 
@@ -42,8 +45,10 @@ export const AdminPanel: React.FC = () => {
   const [editingUser, setEditingUser] = useState<CommercialUser | null>(null);
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [showUserPassword, setShowUserPassword] = useState(false);
+  const [isSavingUser, setIsSavingUser] = useState(false);
 
-  // Formulario Usuario (coincidencia con profiles: id, full_name, email, role, group_id, seller_code)
+  // Formulario Usuario con CONTRASEÑA
   const [userFormData, setUserFormData] = useState<{
     id: string;
     full_name: string;
@@ -51,6 +56,7 @@ export const AdminPanel: React.FC = () => {
     seller_code: string;
     role: UserRole;
     group_id: string;
+    password?: string;
   }>({
     id: '',
     full_name: '',
@@ -58,6 +64,7 @@ export const AdminPanel: React.FC = () => {
     seller_code: '',
     role: 'comercial',
     group_id: '',
+    password: '',
   });
 
   // Estados de Grupos
@@ -101,6 +108,7 @@ export const AdminPanel: React.FC = () => {
    */
   const handleOpenCreateUser = () => {
     setEditingUser(null);
+    setShowUserPassword(false);
     setUserFormData({
       id: generateUUID(),
       full_name: '',
@@ -108,13 +116,14 @@ export const AdminPanel: React.FC = () => {
       seller_code: '',
       role: 'comercial',
       group_id: groups.length > 0 ? groups[0].id : '',
+      password: '',
     });
     setIsUserModalOpen(true);
   };
 
   const handleOpenEditUser = (user: CommercialUser) => {
     setEditingUser(user);
-    // Si el usuario no tiene un UUID válido, generar uno
+    setShowUserPassword(false);
     const validId = (user.id && user.id.includes('-') && user.id.length >= 32) ? user.id : generateUUID();
     setUserFormData({
       id: validId,
@@ -123,18 +132,51 @@ export const AdminPanel: React.FC = () => {
       seller_code: user.seller_code || user.vendor_code || '',
       role: user.role,
       group_id: user.group_id || (groups.length > 0 ? groups[0].id : ''),
+      password: '',
     });
     setIsUserModalOpen(true);
   };
 
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsSavingUser(true);
     try {
-      const result = await saveUser(userFormData);
-      if (result.success) {
+      // 2. Llamada a la API Route /api/admin/users para guardar en auth.users y public.profiles
+      const response = await fetch('/api/admin/users', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          id: userFormData.id,
+          full_name: userFormData.full_name,
+          email: userFormData.email,
+          seller_code: userFormData.seller_code,
+          role: userFormData.role,
+          group_id: userFormData.group_id,
+          password: userFormData.password,
+          is_edit: Boolean(editingUser),
+        }),
+      });
+
+      const resData = await response.json();
+
+      if (response.ok && resData.success) {
+        // También sincronizar caché local para reactividad inmediata
+        await saveUser({
+          id: resData.user?.id || userFormData.id,
+          full_name: userFormData.full_name,
+          email: userFormData.email,
+          role: userFormData.role,
+          group_id: userFormData.group_id,
+          seller_code: userFormData.seller_code,
+        });
+
         setNotification({
           type: 'success',
-          message: editingUser ? 'Usuario actualizado con éxito en Supabase (profiles).' : 'Nuevo usuario registrado con éxito en Supabase (profiles).',
+          message: editingUser 
+            ? 'Usuario actualizado con éxito en Supabase Auth y Profiles.' 
+            : 'Nuevo usuario creado correctamente en Supabase Auth y Profiles.',
         });
         setIsUserModalOpen(false);
         await loadData();
@@ -142,13 +184,15 @@ export const AdminPanel: React.FC = () => {
         // 3. Capturar el mensaje exacto de error de Supabase
         setNotification({ 
           type: 'error', 
-          message: `Error al guardar en Supabase: ${result.error || 'Respuesta no válida del servidor'}` 
+          message: `Error al guardar en Supabase: ${resData.error || 'Respuesta no válida del servidor'}` 
         });
       }
     } catch (err: any) {
       setNotification({ type: 'error', message: `Excepción: ${err.message || 'Error no controlado'}` });
+    } finally {
+      setIsSavingUser(false);
     }
-    setTimeout(() => setNotification(null), 5000);
+    setTimeout(() => setNotification(null), 6000);
   };
 
   const handleDeleteUser = async (userId: string, name: string) => {
@@ -647,6 +691,40 @@ export const AdminPanel: React.FC = () => {
                     ))}
                   </select>
                 </div>
+              </div>
+
+              {/* 2. Campo CONTRASEÑA DEL USUARIO con opción de mostrar/ocultar mediante ojo */}
+              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                    <Lock className="w-3.5 h-3.5 text-solitium-500" />
+                    <span>Contraseña del Usuario</span>
+                  </label>
+                  <span className="text-[11px] text-slate-400">
+                    {editingUser ? '(Dejar vacío para no cambiarla)' : 'Mín. 6-8 caracteres'}
+                  </span>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showUserPassword ? 'text' : 'password'}
+                    value={userFormData.password || ''}
+                    onChange={(e) => setUserFormData({ ...userFormData, password: e.target.value })}
+                    placeholder={editingUser ? '•••••••••••• (sin cambios)' : 'ej. $0LITIUM2026'}
+                    className="w-full text-xs font-medium bg-white border border-slate-300 rounded-xl pl-3 pr-10 py-2.5 focus:ring-2 focus:ring-solitium-500 text-slate-900"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowUserPassword(!showUserPassword)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
+                  >
+                    {showUserPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-500">
+                  {editingUser 
+                    ? 'Si introduces una nueva clave, se actualizará directamente en Supabase Auth.'
+                    : 'Esta clave permitirá al usuario iniciar sesión en el portal.'}
+                </p>
               </div>
 
               <div className="pt-4 border-t border-slate-200 flex justify-end gap-3">
