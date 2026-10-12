@@ -14,7 +14,10 @@ import {
   Sparkles,
   Zap,
   UserCheck,
-  ShieldAlert
+  ShieldAlert,
+  AlertTriangle,
+  Activity,
+  TrendingDown
 } from 'lucide-react';
 import { GroupTarget, CommercialUser, BusinessLineId, BUSINESS_LINES, CommercialGroup, SalesRecord } from '@/types';
 import { getGroupTarget, saveGroupTarget, getCommercialQuotas, saveCommercialQuotas, getAllUsers, getCommercialGroups, getAllSalesForFiscalYear } from '@/lib/storage';
@@ -55,6 +58,7 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
 
   const [teamMembers, setTeamMembers] = useState<CommercialUser[]>([]);
   const [groupSales, setGroupSales] = useState<SalesRecord[]>([]);
+  const [selectedDiagnosticCommercialId, setSelectedDiagnosticCommercialId] = useState<string>('');
 
   useEffect(() => {
     loadData();
@@ -116,11 +120,42 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
         }
         setTeamQuotas(qMap);
 
-        // Cargar ventas consolidadas de los integrantes del grupo
+        // Cargar ventas consolidadas de los integrantes del grupo con filtrado por EQUIPO COMERCIAL
         const allSales = await getAllSalesForFiscalYear(fiscalYear);
         const allMemberIds = [...commercials.map(u => u.id), ...(activeDcUser ? [activeDcUser.id] : [])];
-        const relevantSales = allSales.filter(s => allMemberIds.includes(s.commercial_id || s.user_id || ''));
+
+        const dcSellerCode = (activeDcUser?.seller_code || activeDcUser?.vendor_code || currentUser.seller_code || '').trim().toUpperCase();
+        const activeGroupObj = allGroups.find(g => g.id === targetGroupId);
+        const groupName = (activeGroupObj?.name || '').trim().toUpperCase();
+        const dcFullName = (activeDcUser?.full_name || activeDcUser?.name || currentUser.name || '').trim().toUpperCase();
+
+        const isSaleMatchingThisTeam = (sale: SalesRecord) => {
+          const isMember = allMemberIds.includes(sale.commercial_id || sale.user_id || '');
+          if (!isMember) return false;
+
+          // Si la venta tiene team_code, debe pertenecer al equipo de este Director Comercial
+          if (sale.team_code) {
+            const saleTeam = sale.team_code.trim().toUpperCase();
+            const isCodeMatch = dcSellerCode && (saleTeam === dcSellerCode || saleTeam.includes(dcSellerCode) || dcSellerCode.includes(saleTeam));
+            const isNameMatch = groupName && (saleTeam === groupName || saleTeam.includes(groupName) || groupName.includes(saleTeam));
+            const isDcNameMatch = dcFullName && (saleTeam.includes(dcFullName) || dcFullName.includes(saleTeam));
+            const isGroupIdMatch = sale.team_code === targetGroupId;
+            return isCodeMatch || isNameMatch || isDcNameMatch || isGroupIdMatch;
+          }
+
+          // Si la venta no trae team_code (por compatibilidad previa), se consolida por comercial asignado
+          return true;
+        };
+
+        const relevantSales = allSales.filter(isSaleMatchingThisTeam);
         setGroupSales(relevantSales);
+
+        // Inicializar o ajustar comercial seleccionado para diagnóstico
+        setSelectedDiagnosticCommercialId(prev => {
+          if (commercials.some(m => m.id === prev)) return prev;
+          if (activeDcUser && prev === activeDcUser.id) return prev;
+          return commercials[0]?.id || activeDcUser?.id || '';
+        });
       }
     } catch (err) {
       console.error(err);
@@ -220,6 +255,53 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
     9,
     14000
   ) : null;
+
+  // Comercial seleccionado para diagnóstico ("¿En qué pata falla?")
+  const diagnosticTargetUser = teamMembers.find(m => m.id === selectedDiagnosticCommercialId) || 
+    (dcUser?.id === selectedDiagnosticCommercialId ? dcUser : teamMembers[0]) || 
+    dcUser;
+
+  const diagnosticQuotas = diagnosticTargetUser ? (
+    diagnosticTargetUser.id === dcUser?.id ? dcPersonalQuotas : (teamQuotas[diagnosticTargetUser.id] || ({} as any))
+  ) : ({} as any);
+
+  const diagnosticSales = diagnosticTargetUser ? groupSales.filter(s => (s.commercial_id || s.user_id) === diagnosticTargetUser.id) : [];
+
+  const lineDiagnostics = BUSINESS_LINES.map(line => {
+    const target = diagnosticQuotas[line.id] || 0;
+    const actual = line.isCurrency
+      ? diagnosticSales.filter(s => s.line_id === line.id).reduce((sum, s) => sum + (Number(s.amount) || 0), 0)
+      : diagnosticSales.filter(s => s.line_id === line.id && s.is_new_client).length;
+    
+    const remaining = Math.max(0, target - actual);
+    const percentage = target > 0 ? (actual / target) * 100 : (actual > 0 ? 100 : 0);
+
+    let status: 'critical' | 'progress' | 'achieved' = 'critical';
+    if (percentage >= 100) {
+      status = 'achieved';
+    } else if (percentage >= 70) {
+      status = 'progress';
+    }
+
+    return {
+      line,
+      target,
+      actual,
+      remaining,
+      percentage,
+      status,
+    };
+  });
+
+  const linesUnder50 = lineDiagnostics.filter(l => l.target > 0 && l.percentage < 50);
+  const criticalCount = lineDiagnostics.filter(l => l.status === 'critical').length;
+  const progressCount = lineDiagnostics.filter(l => l.status === 'progress').length;
+  const achievedCount = lineDiagnostics.filter(l => l.status === 'achieved').length;
+
+  const totalDiagnosticTarget = BUSINESS_LINES.filter(b => b.isCurrency).reduce((sum, b) => sum + (diagnosticQuotas[b.id] || 0), 0);
+  const totalDiagnosticActual = diagnosticSales.reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+  const totalDiagnosticRemaining = Math.max(0, totalDiagnosticTarget - totalDiagnosticActual);
+  const totalDiagnosticPct = totalDiagnosticTarget > 0 ? (totalDiagnosticActual / totalDiagnosticTarget) * 100 : 0;
 
   if (loading || !groupTarget) {
     return (
@@ -488,7 +570,301 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
         </div>
       </div>
 
-      {/* 4. Formulario de Configuración de Objetivos y Bono Anual del Director Comercial */}
+      {/* 4. Vista de Análisis de Rendimiento por Comercial ("En qué pata falla" con semáforo) */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+        <div className="p-6 border-b border-slate-200 bg-slate-50/80 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] bg-rose-100 text-rose-700 font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                Diagnóstico de Rendimiento
+              </span>
+              <span className="text-xs text-slate-400 font-medium">&bull; Análisis Semafórico 10 Líneas</span>
+            </div>
+            <h3 className="text-base font-bold text-slate-900 mt-1 flex items-center gap-2">
+              <Activity className="w-5 h-5 text-solitium-500" />
+              ¿En Qué Pata Falla Cada Comercial?
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Supervisión de consecución real vs cuota línea a línea para preparar las reuniones de seguimiento y desbloquear desviaciones.
+            </p>
+          </div>
+
+          {/* Selector de comercial para diagnóstico */}
+          <div className="flex flex-wrap items-center gap-2">
+            {teamMembers.map(member => {
+              const isSelected = member.id === diagnosticTargetUser?.id;
+              return (
+                <button
+                  key={member.id}
+                  onClick={() => setSelectedDiagnosticCommercialId(member.id)}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-all border ${
+                    isSelected
+                      ? 'bg-solitium-500 text-white border-solitium-600 shadow-md scale-[1.02]'
+                      : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-200'
+                  }`}
+                >
+                  <span className={`w-2 h-2 rounded-full ${isSelected ? 'bg-white' : 'bg-solitium-500'}`}></span>
+                  <span>{member.full_name || member.name}</span>
+                  <span className={`font-mono text-[10px] px-1.5 py-0.5 rounded ${
+                    isSelected ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    {member.seller_code || member.vendor_code}
+                  </span>
+                </button>
+              );
+            })}
+
+            {dcUser && (
+              <button
+                onClick={() => setSelectedDiagnosticCommercialId(dcUser.id)}
+                className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-all border ${
+                  dcUser.id === diagnosticTargetUser?.id
+                    ? 'bg-purple-600 text-white border-purple-700 shadow-md scale-[1.02]'
+                    : 'bg-purple-50 hover:bg-purple-100 text-purple-700 border-purple-200'
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${dcUser.id === diagnosticTargetUser?.id ? 'bg-white' : 'bg-purple-500'}`}></span>
+                <span>{dcUser.full_name || dcUser.name} (DC)</span>
+                <span className={`font-mono text-[10px] px-1.5 py-0.5 rounded ${
+                  dcUser.id === diagnosticTargetUser?.id ? 'bg-white/20 text-white' : 'bg-purple-100 text-purple-800'
+                }`}>
+                  {dcUser.seller_code || dcUser.vendor_code || 'DC'}
+                </span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {diagnosticTargetUser ? (
+          <div className="p-6 space-y-6">
+            {/* Alerta / Resumen de diagnóstico rápido: Líneas por debajo del 50% */}
+            {linesUnder50.length > 0 ? (
+              <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl flex items-start gap-3">
+                <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold text-rose-900 uppercase tracking-wider">
+                      Resumen de Diagnóstico Rápido: {linesUnder50.length} Línea(s) por debajo del 50%
+                    </h4>
+                    <span className="text-[10px] font-bold text-rose-700 bg-rose-100 px-2 py-0.5 rounded-full">
+                      Empujar en Seguimiento Semanal
+                    </span>
+                  </div>
+                  <p className="text-xs text-rose-800 mt-1">
+                    Para <strong className="font-extrabold">{diagnosticTargetUser.full_name || diagnosticTargetUser.name}</strong>, estas líneas requieren foco comercial inmediato para evitar desvíos en el cierre anual:
+                  </p>
+                  <div className="flex flex-wrap gap-2 mt-2.5">
+                    {linesUnder50.map(item => (
+                      <div 
+                        key={item.line.id}
+                        className="inline-flex items-center gap-2 px-3 py-1.5 bg-white text-rose-900 border border-rose-300 rounded-lg text-xs font-bold shadow-2xs"
+                      >
+                        <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
+                        <span>{item.line.name}</span>
+                        <span className="font-mono text-rose-600 font-extrabold bg-rose-50 px-1.5 py-0.5 rounded">
+                          {item.percentage.toFixed(1)}%
+                        </span>
+                        <span className="text-[11px] text-slate-500 font-normal">
+                          (Faltan {item.remaining.toLocaleString('es-ES', { minimumFractionDigits: item.line.isCurrency ? 2 : 0 })} {item.line.unit})
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-start gap-3">
+                <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                <div>
+                  <h4 className="text-xs font-bold text-emerald-900 uppercase tracking-wider">
+                    Rendimiento Equilibrado
+                  </h4>
+                  <p className="text-xs text-emerald-800 mt-0.5">
+                    <strong className="font-bold">{diagnosticTargetUser.full_name || diagnosticTargetUser.name}</strong> no presenta ninguna línea asignada por debajo del 50% de cuota. Todas las líneas evolucionan a buen ritmo.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Tarjetas KPI de este comercial */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Cuota Asignada (€)</p>
+                <p className="text-lg font-black text-slate-900 mt-1">
+                  {totalDiagnosticTarget.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
+                </p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Líneas monetarias
+                </p>
+              </div>
+
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Facturado Real (€)</p>
+                <p className="text-lg font-black text-solitium-600 mt-1">
+                  {totalDiagnosticActual.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
+                </p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Ventas sumadas a este equipo
+                </p>
+              </div>
+
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Restante para Objetivo (€)</p>
+                <p className="text-lg font-black text-slate-800 mt-1">
+                  {totalDiagnosticRemaining.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
+                </p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Pendiente de cubrir
+                </p>
+              </div>
+
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Resumen Semáforo (Líneas)</p>
+                <div className="flex items-center gap-2 mt-2">
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
+                    🔴 {criticalCount}
+                  </span>
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                    🟡 {progressCount}
+                  </span>
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    🟢 {achievedCount}
+                  </span>
+                </div>
+                <div className="w-full bg-slate-200 rounded-full h-1.5 mt-2">
+                  <div 
+                    className={`h-1.5 rounded-full ${
+                      totalDiagnosticPct >= 100 ? 'bg-emerald-500' : totalDiagnosticPct >= 70 ? 'bg-amber-500' : 'bg-rose-500'
+                    }`}
+                    style={{ width: `${Math.min(100, Math.max(0, totalDiagnosticPct))}%` }}
+                  ></div>
+                </div>
+              </div>
+            </div>
+
+            {/* Tabla Detallada de las 10 Líneas de Negocio con Semáforo */}
+            <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-100 text-slate-700 font-bold uppercase">
+                  <tr>
+                    <th className="p-3.5">Línea de Negocio</th>
+                    <th className="p-3.5 text-right">Cuota Asignada</th>
+                    <th className="p-3.5 text-right">Facturado Real</th>
+                    <th className="p-3.5 text-right">Restante para Objetivo</th>
+                    <th className="p-3.5 text-center">% Consecución</th>
+                    <th className="p-3.5 text-center">Estado Semáforo</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-medium text-slate-600">
+                  {lineDiagnostics.map(item => {
+                    const isCurrency = item.line.isCurrency;
+                    return (
+                      <tr 
+                        key={item.line.id} 
+                        className={`transition-colors ${
+                          item.status === 'critical' ? 'hover:bg-rose-50/40 bg-white' : 
+                          item.status === 'progress' ? 'hover:bg-amber-50/40 bg-white' : 
+                          'hover:bg-emerald-50/40 bg-emerald-50/10'
+                        }`}
+                      >
+                        <td className="p-3.5">
+                          <div className="flex items-center gap-2">
+                            <span className="w-2.5 h-2.5 rounded-full bg-solitium-500 shrink-0"></span>
+                            <div>
+                              <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                                <span>{item.line.name}</span>
+                                <span className="font-mono text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded">
+                                  {item.line.shortName}
+                                </span>
+                              </div>
+                              <div className="text-[10px] text-slate-400">{item.line.group}</div>
+                            </div>
+                          </div>
+                        </td>
+
+                        <td className="p-3.5 text-right font-semibold text-slate-700">
+                          {isCurrency
+                            ? `${item.target.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €`
+                            : `${item.target} Clientes`}
+                        </td>
+
+                        <td className="p-3.5 text-right font-bold text-slate-900">
+                          {isCurrency
+                            ? `${item.actual.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €`
+                            : `${item.actual} Clientes`}
+                        </td>
+
+                        <td className="p-3.5 text-right font-medium">
+                          {item.remaining > 0 ? (
+                            <span className="text-slate-600">
+                              {isCurrency
+                                ? `${item.remaining.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €`
+                                : `${item.remaining} Clientes`}
+                            </span>
+                          ) : (
+                            <span className="text-emerald-600 font-bold">¡Objetivo Cubierto!</span>
+                          )}
+                        </td>
+
+                        <td className="p-3.5">
+                          <div className="w-28 mx-auto space-y-1">
+                            <div className="flex justify-between text-[11px] font-bold">
+                              <span className={
+                                item.status === 'critical' ? 'text-rose-600' :
+                                item.status === 'progress' ? 'text-amber-600' :
+                                'text-emerald-600'
+                              }>
+                                {item.percentage.toFixed(1)}%
+                              </span>
+                            </div>
+                            <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                              <div 
+                                className={`h-1.5 rounded-full ${
+                                  item.status === 'critical' ? 'bg-rose-500' :
+                                  item.status === 'progress' ? 'bg-amber-500' :
+                                  'bg-emerald-500'
+                                }`}
+                                style={{ width: `${Math.min(100, item.percentage)}%` }}
+                              ></div>
+                            </div>
+                          </div>
+                        </td>
+
+                        <td className="p-3.5 text-center">
+                          {item.status === 'critical' && (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-rose-100 text-rose-800 border border-rose-200 shadow-2xs">
+                              <span>🔴</span>
+                              <span>Crítico (&lt; 70%)</span>
+                            </span>
+                          )}
+                          {item.status === 'progress' && (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-200 shadow-2xs">
+                              <span>🟡</span>
+                              <span>En progreso (70-99%)</span>
+                            </span>
+                          )}
+                          {item.status === 'achieved' && (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 shadow-2xs">
+                              <span>🟢</span>
+                              <span>Superado (≥ 100%)</span>
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+          <div className="p-8 text-center text-slate-400 text-xs font-medium">
+            Selecciona un comercial de la lista superior para diagnosticar su rendimiento.
+          </div>
+        )}
+      </div>
+
+      {/* 5. Formulario de Configuración de Objetivos y Bono Anual del Director Comercial */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-6">
         <div className="border-b border-slate-100 pb-4">
           <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">

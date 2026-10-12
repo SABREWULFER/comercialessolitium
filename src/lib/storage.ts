@@ -500,6 +500,7 @@ function normalizeSaleRecord(s: any): SalesRecord {
     commercial_id: commId,
     user_id: commId,
     vendor_code: s.vendor_code || '',
+    team_code: s.team_code || null,
     line_id: s.line_id,
     amount: Number(s.amount) || 0,
     discount_rate: Number(s.discount_rate) || 0,
@@ -518,6 +519,7 @@ function normalizeSaleRecord(s: any): SalesRecord {
 
 export interface RawDBSaleRecord {
   commercial_id: string | null; // uuid de public.profiles o null si no existe vendedor registrado
+  team_code?: string | null; // Columna 'EQUIPO COMERCIAL' de la liquidación
   line_id: string;
   fiscal_year: string;
   amount: number;
@@ -593,6 +595,7 @@ export async function saveSalesRecordsDirect(
       for (let i = 0; i < records.length; i += BATCH_SIZE) {
         const batch = records.slice(i, i + BATCH_SIZE).map(r => ({
           commercial_id: r.commercial_id,
+          team_code: r.team_code || null,
           line_id: r.line_id,
           fiscal_year: r.fiscal_year,
           amount: Number(r.amount) || 0,
@@ -604,9 +607,17 @@ export async function saveSalesRecordsDirect(
           sale_date: r.sale_date,
         }));
 
-        const { error } = await supabase
+        let { error } = await supabase
           .from('sales_records')
           .insert(batch);
+
+        // Fallback defensivo si la columna team_code todavía no se ha agregado en Supabase
+        if (error && (error.message.includes('team_code') || error.code === '42703')) {
+          console.warn('Columna team_code no encontrada en Supabase, reintentando inserción sin team_code...');
+          const fallbackBatch = batch.map(({ team_code, ...rest }: any) => rest);
+          const fallbackRes = await supabase.from('sales_records').insert(fallbackBatch);
+          error = fallbackRes.error;
+        }
 
         if (error) {
           console.error('Error insertando lote de 50 en sales_records:', error);

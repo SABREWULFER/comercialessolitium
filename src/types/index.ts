@@ -95,6 +95,7 @@ export interface SalesRecord {
   commercial_id: string | null; // uuid de public.profiles o null
   user_id?: string; // compatibilidad
   vendor_code?: string; // compatibilidad
+  team_code?: string | null; // Columna 'EQUIPO COMERCIAL' (código/nombre del equipo)
   line_id: BusinessLineId;
   fiscal_year: string;
   amount: number;
