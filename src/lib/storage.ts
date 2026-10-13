@@ -355,49 +355,76 @@ export async function getUserProfileByEmail(email: string): Promise<CommercialUs
  * ==========================================
  */
 
-export async function getCommercialQuotas(userId: string, fiscalYear: string): Promise<Record<BusinessLineId, number>> {
+export async function getCommercialQuotas(
+  commercialId: string, 
+  fiscalYear: string,
+  userSellerCode?: string
+): Promise<Record<BusinessLineId, number>> {
   const result: Record<BusinessLineId, number> = {} as any;
   BUSINESS_LINES.forEach(line => {
     result[line.id] = 0;
   });
 
+  const targetId = (commercialId || '').toString().trim().toUpperCase();
+  const targetCode = (userSellerCode || '').toString().trim().toUpperCase();
+
   if (isSupabaseConfigured()) {
     try {
+      // Consultar commercial_quotas para este ejercicio fiscal
       const { data, error } = await supabase
         .from('commercial_quotas')
         .select('*')
-        .eq('user_id', userId)
         .eq('fiscal_year', fiscalYear);
 
       if (!error && data && data.length > 0) {
-        data.forEach((row: any) => {
-          if (row.line_id && result.hasOwnProperty(row.line_id)) {
-            result[row.line_id as BusinessLineId] = Number(row.target_value) || 0;
-          }
+        // Encontrar filas correspondientes a este comercial por commercial_id, seller_code o user_id
+        const userRows = data.filter((row: any) => {
+          const rowCommId = (row.commercial_id || row.user_id || '').toString().trim().toUpperCase();
+          return Boolean(
+            (rowCommId && rowCommId === targetId) ||
+            (targetCode && rowCommId === targetCode)
+          );
         });
 
-        // Guardar copia fresca en caché local
-        const localList = getLocalData<CommercialQuota[]>(LOCAL_STORAGE_QUOTAS_KEY, []);
-        const filtered = localList.filter(q => !(q.user_id === userId && q.fiscal_year === fiscalYear));
-        const syncRecords: CommercialQuota[] = data.map((row: any) => ({
-          user_id: userId,
-          fiscal_year: fiscalYear,
-          line_id: row.line_id,
-          target_value: Number(row.target_value) || 0,
-        }));
-        setLocalData(LOCAL_STORAGE_QUOTAS_KEY, [...filtered, ...syncRecords]);
-        return result;
+        if (userRows.length > 0) {
+          userRows.forEach((row: any) => {
+            if (row.line_id && result.hasOwnProperty(row.line_id)) {
+              const amt = row.quota_amount !== undefined ? Number(row.quota_amount) : Number(row.target_value);
+              result[row.line_id as BusinessLineId] = isNaN(amt) ? 0 : amt;
+            }
+          });
+
+          // Actualizar caché local
+          const localList = getLocalData<any[]>(LOCAL_STORAGE_QUOTAS_KEY, []);
+          const filtered = localList.filter(q => !( (q.commercial_id === commercialId || q.user_id === commercialId) && q.fiscal_year === fiscalYear));
+          const syncLocal = userRows.map(r => ({
+            commercial_id: commercialId,
+            user_id: commercialId,
+            fiscal_year: fiscalYear,
+            line_id: r.line_id,
+            quota_amount: r.quota_amount !== undefined ? Number(r.quota_amount) : Number(r.target_value),
+            target_value: r.quota_amount !== undefined ? Number(r.quota_amount) : Number(r.target_value),
+          }));
+          setLocalData(LOCAL_STORAGE_QUOTAS_KEY, [...filtered, ...syncLocal]);
+
+          return result;
+        }
       }
     } catch (err) {
-      console.warn('Fallo consultando Supabase, usando fallback local', err);
+      console.warn('Fallo consultando commercial_quotas en Supabase, usando fallback local', err);
     }
   }
 
-  const localList = getLocalData<CommercialQuota[]>(LOCAL_STORAGE_QUOTAS_KEY, []);
-  const userQuotas = localList.filter(q => q.user_id === userId && q.fiscal_year === fiscalYear);
+  // Fallback a localStorage
+  const localList = getLocalData<any[]>(LOCAL_STORAGE_QUOTAS_KEY, []);
+  const userQuotas = localList.filter(q => 
+    (q.commercial_id === commercialId || q.user_id === commercialId || (targetCode && (q.commercial_id === targetCode || q.user_id === targetCode))) && 
+    q.fiscal_year === fiscalYear
+  );
   userQuotas.forEach(q => {
     if (q.line_id && result.hasOwnProperty(q.line_id)) {
-      result[q.line_id] = Number(q.target_value) || 0;
+      const amt = q.quota_amount !== undefined ? Number(q.quota_amount) : Number(q.target_value);
+      result[q.line_id as BusinessLineId] = isNaN(amt) ? 0 : amt;
     }
   });
 
@@ -405,54 +432,81 @@ export async function getCommercialQuotas(userId: string, fiscalYear: string): P
 }
 
 export async function saveCommercialQuotas(
-  userId: string, 
+  commercialId: string, 
   fiscalYear: string, 
   quotas: Record<BusinessLineId, number>
-): Promise<boolean> {
-  const recordsToUpsert: CommercialQuota[] = Object.entries(quotas).map(([line_id, target_value]) => ({
-    user_id: userId,
+): Promise<{ success: boolean; error?: string }> {
+  const quotasToUpsert = Object.entries(quotas).map(([lineId, amount]) => ({
+    commercial_id: commercialId,
+    line_id: lineId,
     fiscal_year: fiscalYear,
-    line_id: line_id as BusinessLineId,
-    target_value: Number(target_value) || 0,
+    quota_amount: Number(amount) || 0,
     updated_at: new Date().toISOString(),
   }));
 
   // Guardar siempre en local storage para que el valor persista en el navegador
-  const localList = getLocalData<CommercialQuota[]>(LOCAL_STORAGE_QUOTAS_KEY, []);
-  const filtered = localList.filter(q => !(q.user_id === userId && q.fiscal_year === fiscalYear));
-  setLocalData(LOCAL_STORAGE_QUOTAS_KEY, [...filtered, ...recordsToUpsert]);
+  const localList = getLocalData<any[]>(LOCAL_STORAGE_QUOTAS_KEY, []);
+  const filtered = localList.filter(q => !( (q.commercial_id === commercialId || q.user_id === commercialId) && q.fiscal_year === fiscalYear));
+  const syncLocal = quotasToUpsert.map(q => ({
+    commercial_id: commercialId,
+    user_id: commercialId,
+    fiscal_year: fiscalYear,
+    line_id: q.line_id,
+    quota_amount: q.quota_amount,
+    target_value: q.quota_amount,
+  }));
+  setLocalData(LOCAL_STORAGE_QUOTAS_KEY, [...filtered, ...syncLocal]);
 
   if (isSupabaseConfigured()) {
     try {
+      // 1. Intento principal con el esquema oficial: commercial_id, line_id, fiscal_year, quota_amount
       const { error } = await supabase
         .from('commercial_quotas')
-        .upsert(recordsToUpsert, { onConflict: 'user_id,fiscal_year,line_id' });
+        .upsert(quotasToUpsert, { onConflict: 'commercial_id,line_id,fiscal_year' });
 
       if (error) {
-        console.warn('Upsert de commercial_quotas falló, intentando delete + insert:', error.message);
-        // Fallback por si la restricción en Supabase tiene diferente configuración
-        const { error: delError } = await supabase
-          .from('commercial_quotas')
-          .delete()
-          .eq('user_id', userId)
-          .eq('fiscal_year', fiscalYear);
+        console.warn('Upsert en commercial_quotas falló, probando con user_id/target_value:', error.message);
+        
+        // Fallback defensivo si la tabla tuviera columnas legacy user_id y target_value
+        const legacyUpsert = quotasToUpsert.map(q => ({
+          user_id: commercialId,
+          line_id: q.line_id,
+          fiscal_year: fiscalYear,
+          target_value: q.quota_amount,
+          updated_at: q.updated_at,
+        }));
 
-        if (!delError) {
-          const { error: insError } = await supabase
+        const { error: legacyError } = await supabase
+          .from('commercial_quotas')
+          .upsert(legacyUpsert, { onConflict: 'user_id,line_id,fiscal_year' });
+
+        if (legacyError) {
+          // Intentar delete + insert directo
+          const { error: delError } = await supabase
             .from('commercial_quotas')
-            .insert(recordsToUpsert);
-          if (!insError) return true;
+            .delete()
+            .eq('commercial_id', commercialId)
+            .eq('fiscal_year', fiscalYear);
+
+          if (!delError) {
+            const { error: insError } = await supabase
+              .from('commercial_quotas')
+              .insert(quotasToUpsert);
+            if (!insError) return { success: true };
+          }
+
+          console.error('Error persistiendo commercial_quotas en Supabase:', error);
+          return { success: false, error: `${error.message}${error.details ? ` (${error.details})` : ''}` };
         }
-        return false;
       }
-      return true;
-    } catch (err) {
+      return { success: true };
+    } catch (err: any) {
       console.error('Excepción al conectar con Supabase:', err);
-      return false;
+      return { success: false, error: err.message || 'Error de red o conexión al guardar en Supabase' };
     }
   }
 
-  return true;
+  return { success: true };
 }
 
 export async function getGroupTarget(groupId: string, fiscalYear: string): Promise<GroupTarget> {

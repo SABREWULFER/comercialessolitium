@@ -20,6 +20,7 @@ import {
   TrendingDown
 } from 'lucide-react';
 import { GroupTarget, CommercialUser, BusinessLineId, BUSINESS_LINES, CommercialGroup, SalesRecord } from '@/types';
+import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { getGroupTarget, saveGroupTarget, getCommercialQuotas, saveCommercialQuotas, getAllUsers, getCommercialGroups, getAllSalesForFiscalYear } from '@/lib/storage';
 import { calculateDCBonus } from '@/lib/calculations';
 
@@ -103,13 +104,6 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
 
         setDcUser(activeDcUser);
 
-        if (activeDcUser) {
-          const dcQ = await getCommercialQuotas(activeDcUser.id, fiscalYear);
-          setDcPersonalQuotas(dcQ);
-        } else {
-          setDcPersonalQuotas({} as any);
-        }
-
         // Filtrar comerciales asignados al grupo activo
         const commercials = all.filter(u => u.role === 'comercial' && u.group_id === targetGroupId);
 
@@ -124,9 +118,76 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
 
         setTeamMembers(commercials);
 
+        // 3. CARGA DIRECTA DE CUOTAS AL MONTAR LA PÁGINA DESDE SUPABASE
+        let quotasData: any[] = [];
+        if (isSupabaseConfigured()) {
+          try {
+            const { data, error } = await supabase
+              .from('commercial_quotas')
+              .select('*')
+              .eq('fiscal_year', fiscalYear);
+
+            if (error) {
+              console.error('Error consultando commercial_quotas desde Supabase:', error);
+            } else if (data) {
+              quotasData = data;
+            }
+          } catch (err) {
+            console.error('Excepción al cargar commercial_quotas:', err);
+          }
+        }
+
+        const matchRowToUser = (row: any, user: CommercialUser) => {
+          const rowCommId = (row.commercial_id || row.user_id || '').toString().trim().toUpperCase();
+          const userId = (user.id || '').toString().trim().toUpperCase();
+          const userSellerCode = (user.seller_code || user.vendor_code || '').toString().trim().toUpperCase();
+          return Boolean(
+            (rowCommId && rowCommId === userId) ||
+            (userSellerCode && rowCommId === userSellerCode)
+          );
+        };
+
+        // Rellenar cuota personal del Director Comercial
+        if (activeDcUser) {
+          const dcQ: Record<BusinessLineId, number> = {} as any;
+          BUSINESS_LINES.forEach(b => { dcQ[b.id] = 0; });
+
+          const dcRows = quotasData.filter(r => matchRowToUser(r, activeDcUser));
+          if (dcRows.length > 0) {
+            dcRows.forEach(r => {
+              if (r.line_id && dcQ.hasOwnProperty(r.line_id)) {
+                const amt = r.quota_amount !== undefined ? Number(r.quota_amount) : Number(r.target_value);
+                dcQ[r.line_id as BusinessLineId] = isNaN(amt) ? 0 : amt;
+              }
+            });
+          } else {
+            const fallback = await getCommercialQuotas(activeDcUser.id, fiscalYear, activeDcUser.seller_code || activeDcUser.vendor_code);
+            Object.assign(dcQ, fallback);
+          }
+          setDcPersonalQuotas(dcQ);
+        } else {
+          setDcPersonalQuotas({} as any);
+        }
+
+        // Rellenar cuotas para cada comercial asignado al equipo
         const qMap: Record<string, Record<BusinessLineId, number>> = {};
         for (const m of commercials) {
-          qMap[m.id] = await getCommercialQuotas(m.id, fiscalYear);
+          const mQ: Record<BusinessLineId, number> = {} as any;
+          BUSINESS_LINES.forEach(b => { mQ[b.id] = 0; });
+
+          const mRows = quotasData.filter(r => matchRowToUser(r, m));
+          if (mRows.length > 0) {
+            mRows.forEach(r => {
+              if (r.line_id && mQ.hasOwnProperty(r.line_id)) {
+                const amt = r.quota_amount !== undefined ? Number(r.quota_amount) : Number(r.target_value);
+                mQ[r.line_id as BusinessLineId] = isNaN(amt) ? 0 : amt;
+              }
+            });
+          } else {
+            const fallback = await getCommercialQuotas(m.id, fiscalYear, m.seller_code || m.vendor_code);
+            Object.assign(mQ, fallback);
+          }
+          qMap[m.id] = mQ;
         }
         setTeamQuotas(qMap);
 
@@ -217,14 +278,34 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
     if (!selectedUserForEdit) return;
     setSavingCommercial(true);
     try {
+      const currentCommercialId = selectedUserForEdit.id;
+      const quotasToUpsert = Object.entries(editedUserQuotas).map(([lineId, amount]) => ({
+        commercial_id: currentCommercialId,
+        line_id: lineId,
+        fiscal_year: fiscalYear || '2026-2027',
+        quota_amount: Number(amount) || 0,
+        updated_at: new Date().toISOString()
+      }));
+
+      const { error } = await supabase
+        .from('commercial_quotas')
+        .upsert(quotasToUpsert, { onConflict: 'commercial_id,line_id,fiscal_year' });
+
+      if (error) {
+        console.error('Error al guardar en commercial_quotas:', error);
+        setNotification(`Error técnico al guardar en Supabase: ${error.message}${error.details ? ` (${error.details})` : ''}`);
+        return;
+      }
+
       await saveCommercialQuotas(selectedUserForEdit.id, fiscalYear, editedUserQuotas);
       await loadData();
       setSelectedUserForEdit(null);
-      setNotification(`Objetivos de ${selectedUserForEdit.full_name || selectedUserForEdit.name} actualizados correctamente en Supabase.`);
+      setNotification(`Cuotas guardadas correctamente en Supabase para ${selectedUserForEdit.full_name || selectedUserForEdit.name}`);
       onRefresh();
-      setTimeout(() => setNotification(null), 3000);
-    } catch (err) {
+      setTimeout(() => setNotification(null), 3500);
+    } catch (err: any) {
       console.error(err);
+      setNotification(`Error inesperado: ${err.message}`);
     } finally {
       setSavingCommercial(false);
     }
@@ -234,14 +315,14 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
   const individualSumCurrency = teamMembers.reduce((acc, member) => {
     const uQuotas = teamQuotas[member.id] || {};
     const memberTotal = BUSINESS_LINES
-      .filter(b => b.isCurrency)
+      .filter(b => b.isCurrency && b.hasTarget !== false)
       .reduce((s, b) => s + (uQuotas[b.id] || 0), 0);
     return acc + memberTotal;
   }, 0);
 
   // 2. Cuota personal propia del Director Comercial (ventas directas)
   const dcPersonalSum = BUSINESS_LINES
-    .filter(b => b.isCurrency)
+    .filter(b => b.isCurrency && b.hasTarget !== false)
     .reduce((s, b) => s + (dcPersonalQuotas[b.id] || 0), 0);
 
   const dcExtra = groupTarget?.dc_extra_quota || 0;
@@ -1130,7 +1211,7 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
             </div>
 
             <div className="p-6 overflow-y-auto space-y-4 flex-1">
-              {BUSINESS_LINES.map(line => (
+              {BUSINESS_LINES.filter(b => b.hasTarget !== false).map(line => (
                 <div key={line.id} className="flex items-center justify-between gap-4 p-2.5 bg-slate-50 hover:bg-slate-100/70 rounded-xl border border-slate-200">
                   <div className="flex-1">
                     <p className="text-xs font-bold text-slate-800">{line.name} ({line.shortName})</p>

@@ -91,7 +91,7 @@ export default function Home() {
 
     try {
       // 1. Obtener cuotas desde Supabase / storage
-      const quotas = await getCommercialQuotas(currentUser.id, fiscalYear);
+      const quotas = await getCommercialQuotas(currentUser.id, fiscalYear, currentUser.seller_code || currentUser.vendor_code);
 
       // 2. Obtener ventas consolidadas
       const sales = await getUserSales(currentUser.id, currentUser.vendor_code, fiscalYear);

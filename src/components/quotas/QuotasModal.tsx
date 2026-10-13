@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Target, Save, CheckCircle2, AlertCircle } from 'lucide-react';
 import { BusinessLineId, BUSINESS_LINES } from '@/types';
+import { supabase } from '@/lib/supabase';
 import { getCommercialQuotas, saveCommercialQuotas } from '@/lib/storage';
 
 interface QuotasModalProps {
@@ -39,10 +40,31 @@ export const QuotasModal: React.FC<QuotasModalProps> = ({
     setSaveSuccess(false);
     setSaveError(null);
     try {
-      const data = await getCommercialQuotas(userId, fiscalYear);
-      setQuotas(data);
+      // 1. Cargar directamente desde commercial_quotas en Supabase
+      const { data, error } = await supabase
+        .from('commercial_quotas')
+        .select('*')
+        .eq('commercial_id', userId)
+        .eq('fiscal_year', fiscalYear);
+
+      if (!error && data && data.length > 0) {
+        const loaded: Record<BusinessLineId, number> = {} as any;
+        BUSINESS_LINES.forEach(l => { loaded[l.id] = 0; });
+        data.forEach((row: any) => {
+          if (row.line_id && loaded.hasOwnProperty(row.line_id)) {
+            const amt = row.quota_amount !== undefined ? Number(row.quota_amount) : Number(row.target_value);
+            loaded[row.line_id as BusinessLineId] = isNaN(amt) ? 0 : amt;
+          }
+        });
+        setQuotas(loaded);
+      } else {
+        const fallback = await getCommercialQuotas(userId, fiscalYear);
+        setQuotas(fallback);
+      }
     } catch (err) {
       console.error(err);
+      const fallback = await getCommercialQuotas(userId, fiscalYear);
+      setQuotas(fallback);
     } finally {
       setLoading(false);
     }
@@ -64,19 +86,37 @@ export const QuotasModal: React.FC<QuotasModalProps> = ({
     setSaveError(null);
 
     try {
-      const success = await saveCommercialQuotas(userId, fiscalYear, quotas);
-      if (success) {
-        setSaveSuccess(true);
-        onSaved();
-        setTimeout(() => {
-          setSaveSuccess(false);
-          onClose();
-        }, 1200);
-      } else {
-        setSaveError('Error al guardar en Supabase. Verifica tu conexión o políticas RLS.');
+      const currentCommercialId = userId;
+      const quotasToUpsert = Object.entries(quotas).map(([lineId, amount]) => ({
+        commercial_id: currentCommercialId,
+        line_id: lineId,
+        fiscal_year: fiscalYear || '2026-2027',
+        quota_amount: Number(amount) || 0,
+        updated_at: new Date().toISOString()
+      }));
+
+      const { error } = await supabase
+        .from('commercial_quotas')
+        .upsert(quotasToUpsert, { onConflict: 'commercial_id,line_id,fiscal_year' });
+
+      if (error) {
+        console.error('Error al guardar en commercial_quotas:', error);
+        setSaveError(`Error técnico al guardar en Supabase: ${error.message}${error.details ? ` (${error.details})` : ''}`);
+        return;
       }
+
+      // Sincronizar también caché de storage local
+      await saveCommercialQuotas(userId, fiscalYear, quotas);
+
+      setSaveSuccess(true);
+      onSaved();
+      setTimeout(() => {
+        setSaveSuccess(false);
+        onClose();
+      }, 1500);
     } catch (err: any) {
-      setSaveError(err.message || 'Error inesperado al guardar cuotas');
+      console.error('Error inesperado al guardar cuotas:', err);
+      setSaveError(err.message || 'Error inesperado al guardar cuotas en Supabase');
     } finally {
       setSaving(false);
     }
@@ -190,7 +230,7 @@ export const QuotasModal: React.FC<QuotasModalProps> = ({
           {saveSuccess && (
             <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg flex items-center gap-2 text-xs font-semibold">
               <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              ¡Objetivos actualizados correctamente en Supabase!
+              Cuotas guardadas correctamente en Supabase
             </div>
           )}
 
