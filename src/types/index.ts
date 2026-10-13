@@ -38,7 +38,9 @@ export type BusinessLineId =
   | '3D'
   | 'DW'
   | 'AV'
-  | 'SAGE_CLIENTS';
+  | 'SAGE_CLIENTS'
+  | 'F-SERVICIOS'
+  | 'VARIOS';
 
 export interface BusinessLineConfig {
   id: BusinessLineId;
@@ -47,21 +49,24 @@ export interface BusinessLineConfig {
   isCurrency: boolean;
   unit: string;
   description: string;
-  group: 'Ofimática y TI' | 'Especialidades' | 'Servicios & Software' | 'Objetivos Estratégicos';
+  group: 'Ofimática y TI' | 'Especialidades' | 'Servicios & Software' | 'Objetivos Estratégicos' | 'Facturación Adicional / Sin Cuota';
+  hasTarget?: boolean; // false para patas informativas que no exigen cuota
 }
 
 export const BUSINESS_LINES: BusinessLineConfig[] = [
-  { id: 'OFI', name: 'Impresión Oficina', shortName: 'OFI', isCurrency: true, unit: '€', description: 'Impresión y multifuncionales de oficina', group: 'Ofimática y TI' },
-  { id: 'MICRO', name: 'Microinformática', shortName: 'MICRO', isCurrency: true, unit: '€', description: 'Puestos de trabajo, portátiles y periféricos', group: 'Ofimática y TI' },
-  { id: 'SISTEMAS', name: 'Sistemas & Servidores', shortName: 'SISTEMAS', isCurrency: true, unit: '€', description: 'Infraestructura, servidores y networking', group: 'Ofimática y TI' },
-  { id: 'MI', name: 'Mantenimiento Solitium', shortName: 'MI', isCurrency: true, unit: '€', description: 'Mantenimientos preventivos/correctivos', group: 'Servicios & Software' },
-  { id: 'SW', name: 'Suscripción & Software', shortName: 'SW', isCurrency: true, unit: '€', description: 'Licenciamiento recurrente y software', group: 'Servicios & Software' },
-  { id: 'PP', name: 'Producción', shortName: 'PP', isCurrency: true, unit: '€', description: 'Sistemas de artes gráficas y producción', group: 'Especialidades' },
-  { id: 'GF', name: 'Gran Formato', shortName: 'GF', isCurrency: true, unit: '€', description: 'Plotters y cartelería gran formato', group: 'Especialidades' },
-  { id: '3D', name: '3D Desktop', shortName: '3D', isCurrency: true, unit: '€', description: 'Impresión y escaneado 3D profesional', group: 'Especialidades' },
-  { id: 'DW', name: 'DocuWare (Gestión Documental)', shortName: 'DW', isCurrency: true, unit: '€', description: 'Soluciones ECM / Gestión documental', group: 'Servicios & Software' },
-  { id: 'AV', name: 'Audiovisuales', shortName: 'AV', isCurrency: true, unit: '€', description: 'Pantallas interactivas y salas de reunión', group: 'Especialidades' },
-  { id: 'SAGE_CLIENTS', name: 'Clientes Nuevos SAGE', shortName: 'SAGE (Clientes)', isCurrency: false, unit: 'Clientes', description: 'Captación de nuevas altas de clientes en SAGE', group: 'Objetivos Estratégicos' },
+  { id: 'OFI', name: 'Impresión Oficina', shortName: 'OFI', isCurrency: true, unit: '€', description: 'Impresión y multifuncionales de oficina', group: 'Ofimática y TI', hasTarget: true },
+  { id: 'MICRO', name: 'Microinformática', shortName: 'MICRO', isCurrency: true, unit: '€', description: 'Puestos de trabajo, portátiles y periféricos', group: 'Ofimática y TI', hasTarget: true },
+  { id: 'SISTEMAS', name: 'Sistemas & Servidores', shortName: 'SISTEMAS', isCurrency: true, unit: '€', description: 'Infraestructura, servidores y networking', group: 'Ofimática y TI', hasTarget: true },
+  { id: 'MI', name: 'Mantenimiento Solitium', shortName: 'MI', isCurrency: true, unit: '€', description: 'Mantenimientos preventivos/correctivos (MO-IN + BOL)', group: 'Servicios & Software', hasTarget: true },
+  { id: 'SW', name: 'Suscripción & Software', shortName: 'SW', isCurrency: true, unit: '€', description: 'Licenciamiento recurrente y software', group: 'Servicios & Software', hasTarget: true },
+  { id: 'PP', name: 'Producción', shortName: 'PP', isCurrency: true, unit: '€', description: 'Sistemas de artes gráficas y producción', group: 'Especialidades', hasTarget: true },
+  { id: 'GF', name: 'Gran Formato', shortName: 'GF', isCurrency: true, unit: '€', description: 'Plotters, látex y cartelería gran formato', group: 'Especialidades', hasTarget: true },
+  { id: '3D', name: '3D Desktop', shortName: '3D', isCurrency: true, unit: '€', description: 'Impresión y escaneado 3D profesional', group: 'Especialidades', hasTarget: true },
+  { id: 'DW', name: 'DocuWare (Gestión Documental)', shortName: 'DW', isCurrency: true, unit: '€', description: 'Soluciones ECM / Gestión documental', group: 'Servicios & Software', hasTarget: true },
+  { id: 'AV', name: 'Audiovisuales', shortName: 'AV', isCurrency: true, unit: '€', description: 'Pantallas interactivas y salas de reunión', group: 'Especialidades', hasTarget: true },
+  { id: 'SAGE_CLIENTS', name: 'Clientes Nuevos SAGE', shortName: 'SAGE (Clientes)', isCurrency: false, unit: 'Clientes', description: 'Captación de nuevas altas de clientes en SAGE', group: 'Objetivos Estratégicos', hasTarget: true },
+  { id: 'F-SERVICIOS', name: 'Fuera de Servicios', shortName: 'F-SERVICIOS', isCurrency: true, unit: '€', description: 'Facturación real fuera de servicios (sin objetivo asignable)', group: 'Facturación Adicional / Sin Cuota', hasTarget: false },
+  { id: 'VARIOS', name: 'Varios', shortName: 'VARIOS', isCurrency: true, unit: '€', description: 'Facturación informativa adicional (sin objetivo asignable)', group: 'Facturación Adicional / Sin Cuota', hasTarget: false },
 ];
 
 export interface CommercialQuota {
@@ -96,6 +101,7 @@ export interface SalesRecord {
   user_id?: string; // compatibilidad
   vendor_code?: string; // compatibilidad
   team_code?: string | null; // Columna 'EQUIPO COMERCIAL' (código/nombre del equipo)
+  subline?: string | null; // 'MO-IN' (core mantenimiento) | 'BOL' u otros
   line_id: BusinessLineId;
   fiscal_year: string;
   amount: number;
@@ -118,6 +124,11 @@ export interface QuotaProgress {
   remaining: number;
   percentage: number;
   isCompleted: boolean;
+  moInActual?: number;
+  bolActual?: number;
+  moInShareOfActual?: number;
+  moInTarget80?: number;
+  moInTargetAchievement?: number;
 }
 
 export interface AcceleratorTier {

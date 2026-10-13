@@ -173,6 +173,7 @@ export const CommercialDashboard: React.FC<CommercialDashboardProps> = ({
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {progressList.map(item => {
+            const isInformative = item.line.hasTarget === false;
             const isFinished = item.isCompleted;
             const hasTarget = item.target > 0;
 
@@ -180,11 +181,13 @@ export const CommercialDashboard: React.FC<CommercialDashboardProps> = ({
               <div 
                 key={item.line.id}
                 className={`p-4 rounded-xl border transition-all ${
-                  isFinished 
-                    ? 'bg-emerald-50/40 border-emerald-200' 
-                    : hasTarget 
-                      ? 'bg-slate-50/70 border-slate-200 hover:bg-slate-50' 
-                      : 'bg-white border-dashed border-slate-300'
+                  isInformative
+                    ? 'bg-slate-50/50 border-slate-200'
+                    : isFinished 
+                      ? 'bg-emerald-50/40 border-emerald-200' 
+                      : hasTarget 
+                        ? 'bg-slate-50/70 border-slate-200 hover:bg-slate-50' 
+                        : 'bg-white border-dashed border-slate-300'
                 }`}
               >
                 <div className="flex items-start justify-between mb-2">
@@ -196,12 +199,16 @@ export const CommercialDashboard: React.FC<CommercialDashboardProps> = ({
                       {item.line.name}
                     </h4>
                   </div>
-                  {isFinished && (
+                  {isInformative ? (
+                    <span className="text-[10px] font-bold bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">
+                      Informativa
+                    </span>
+                  ) : isFinished ? (
                     <span className="flex items-center gap-1 text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
                       <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                       100% OK
                     </span>
-                  )}
+                  ) : null}
                 </div>
 
                 {/* Métricas clave de la línea */}
@@ -214,49 +221,80 @@ export const CommercialDashboard: React.FC<CommercialDashboardProps> = ({
                         : `${item.actual} ${item.line.unit}`}
                     </span>
                   </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-slate-500">Objetivo / Cuota:</span>
-                    <span className="font-semibold text-slate-700">
-                      {hasTarget 
-                        ? (item.line.isCurrency 
-                            ? `${item.target.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €`
-                            : `${item.target} ${item.line.unit}`)
-                        : <span className="text-slate-400 italic">No fijado</span>}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-xs pt-1 border-t border-slate-200/60">
-                    <span className="text-slate-600 font-medium">Falta para cuota:</span>
-                    <span className={`font-bold ${isFinished ? 'text-emerald-600' : 'text-slate-800'}`}>
-                      {isFinished 
-                        ? '0 (Completado)'
-                        : (item.line.isCurrency 
-                            ? `${item.remaining.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €`
-                            : `${item.remaining} ${item.line.unit}`)}
-                    </span>
-                  </div>
+                  
+                  {isInformative ? (
+                    <div className="p-2 bg-blue-50/60 rounded-lg text-[11px] text-blue-700 font-medium">
+                      Línea de facturación real informativa. No computa para aceleradores ni cuotas asignables.
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-slate-500">Objetivo / Cuota:</span>
+                        <span className="font-semibold text-slate-700">
+                          {hasTarget 
+                            ? (item.line.isCurrency 
+                                ? `${item.target.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €`
+                                : `${item.target} ${item.line.unit}`)
+                            : <span className="text-slate-400 italic">No fijado</span>}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-xs pt-1 border-t border-slate-200/60">
+                        <span className="text-slate-600 font-medium">Falta para cuota:</span>
+                        <span className={`font-bold ${isFinished ? 'text-emerald-600' : 'text-slate-800'}`}>
+                          {isFinished 
+                            ? '0 (Completado)'
+                            : (item.line.isCurrency 
+                                ? `${item.remaining.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €`
+                                : `${item.remaining} ${item.line.unit}`)}
+                        </span>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Condición especial MI: Core MO-IN vs Umbral 80% */}
+                  {item.line.id === 'MI' && (
+                    <div className="mt-2 pt-2 border-t border-slate-200/80 bg-slate-100/70 p-2 rounded-lg text-[11px] space-y-1">
+                      <div className="flex justify-between text-slate-700">
+                        <span className="font-semibold">Core MO-IN:</span>
+                        <span className="font-bold">{(item.moInActual || 0).toLocaleString('es-ES', { minimumFractionDigits: 2 })} €</span>
+                      </div>
+                      <div className="flex justify-between text-slate-500">
+                        <span>Bolsas / Consumo (BOL):</span>
+                        <span>{(item.bolActual || 0).toLocaleString('es-ES', { minimumFractionDigits: 2 })} €</span>
+                      </div>
+                      <div className="flex justify-between items-center pt-1 border-t border-slate-200 font-bold">
+                        <span>Umbral Core (80%):</span>
+                        <span className={(item.moInActual || 0) >= (item.moInTarget80 || 0) ? 'text-emerald-700' : 'text-amber-700'}>
+                          {(item.moInActual || 0) >= (item.moInTarget80 || 0) ? '✅ Superado (≥80%)' : `⚠️ Pendiente (Meta: ${(item.moInTarget80 || 0).toLocaleString('es-ES')} €)`}
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Barra de progreso */}
-                <div>
-                  <div className="flex justify-between text-[11px] font-bold mb-1">
-                    <span className="text-slate-500">Consecución:</span>
-                    <span className={item.percentage >= 100 ? 'text-emerald-700 font-black' : 'text-slate-800'}>
-                      {item.percentage.toFixed(1)}%
-                    </span>
+                {!isInformative && (
+                  <div>
+                    <div className="flex justify-between text-[11px] font-bold mb-1">
+                      <span className="text-slate-500">Consecución:</span>
+                      <span className={item.percentage >= 100 ? 'text-emerald-700 font-black' : 'text-slate-800'}>
+                        {item.percentage.toFixed(1)}%
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-200/80 h-2 rounded-full overflow-hidden">
+                      <div 
+                        className={`h-full rounded-full transition-all duration-300 ${
+                          item.percentage >= 100 
+                            ? 'bg-emerald-500' 
+                            : item.percentage >= 60 
+                              ? 'bg-solitium-500' 
+                              : 'bg-amber-500'
+                        }`}
+                        style={{ width: `${Math.min(100, item.percentage)}%` }}
+                      ></div>
+                    </div>
                   </div>
-                  <div className="w-full bg-slate-200/80 h-2 rounded-full overflow-hidden">
-                    <div 
-                      className={`h-full rounded-full transition-all duration-300 ${
-                        item.percentage >= 100 
-                          ? 'bg-emerald-500' 
-                          : item.percentage >= 60 
-                            ? 'bg-solitium-500' 
-                            : 'bg-amber-500'
-                      }`}
-                      style={{ width: `${Math.min(100, item.percentage)}%` }}
-                    ></div>
-                  </div>
-                </div>
+                )}
               </div>
             );
           })}

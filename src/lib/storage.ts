@@ -219,6 +219,10 @@ export async function getAllUsers(): Promise<CommercialUser[]> {
 
       if (!error && data && data.length > 0) {
         const normalized = data.map(normalizeProfile);
+        if (!normalized.some(u => (u.seller_code || u.vendor_code || '').toUpperCase().includes('TELEVENTA'))) {
+          const televentaProfile = DEMO_USERS.find(u => (u.seller_code || '').toUpperCase().includes('TELEVENTA'));
+          if (televentaProfile) normalized.push(normalizeProfile(televentaProfile));
+        }
         setLocalData(LOCAL_STORAGE_USERS_KEY, normalized);
         return normalized;
       }
@@ -231,6 +235,12 @@ export async function getAllUsers(): Promise<CommercialUser[]> {
   if (localUsers.length === 0) {
     localUsers = DEMO_USERS.map(normalizeProfile);
     setLocalData(LOCAL_STORAGE_USERS_KEY, localUsers);
+  } else if (!localUsers.some(u => (u.seller_code || u.vendor_code || '').toUpperCase().includes('TELEVENTA'))) {
+    const televentaProfile = DEMO_USERS.find(u => (u.seller_code || '').toUpperCase().includes('TELEVENTA'));
+    if (televentaProfile) {
+      localUsers.push(normalizeProfile(televentaProfile));
+      setLocalData(LOCAL_STORAGE_USERS_KEY, localUsers);
+    }
   }
   return localUsers.map(normalizeProfile);
 }
@@ -495,12 +505,16 @@ export async function saveGroupTarget(target: GroupTarget): Promise<boolean> {
 function normalizeSaleRecord(s: any): SalesRecord {
   const commId = s.commercial_id || s.user_id || '';
   const dateVal = s.sale_date || s.document_date || '';
+  const rawConcept = (s.raw_data?.concept || s.concept || '').toString().toUpperCase();
+  const sublineVal = s.subline || (rawConcept.includes('MO-IN') ? 'MO-IN' : rawConcept.includes('BOL') ? 'BOL' : null);
+
   return {
     id: s.id,
     commercial_id: commId,
     user_id: commId,
     vendor_code: s.vendor_code || '',
     team_code: s.team_code || null,
+    subline: sublineVal,
     line_id: s.line_id,
     amount: Number(s.amount) || 0,
     discount_rate: Number(s.discount_rate) || 0,
@@ -520,6 +534,7 @@ function normalizeSaleRecord(s: any): SalesRecord {
 export interface RawDBSaleRecord {
   commercial_id: string | null; // uuid de public.profiles o null si no existe vendedor registrado
   team_code?: string | null; // Columna 'EQUIPO COMERCIAL' de la liquidación
+  subline?: string | null; // 'MO-IN' (core mantenimiento) | 'BOL' u otros
   line_id: string;
   fiscal_year: string;
   amount: number;
@@ -596,6 +611,7 @@ export async function saveSalesRecordsDirect(
         const batch = records.slice(i, i + BATCH_SIZE).map(r => ({
           commercial_id: r.commercial_id,
           team_code: r.team_code || null,
+          subline: r.subline || null,
           line_id: r.line_id,
           fiscal_year: r.fiscal_year,
           amount: Number(r.amount) || 0,
@@ -611,10 +627,10 @@ export async function saveSalesRecordsDirect(
           .from('sales_records')
           .insert(batch);
 
-        // Fallback defensivo si la columna team_code todavía no se ha agregado en Supabase
-        if (error && (error.message.includes('team_code') || error.code === '42703')) {
-          console.warn('Columna team_code no encontrada en Supabase, reintentando inserción sin team_code...');
-          const fallbackBatch = batch.map(({ team_code, ...rest }: any) => rest);
+        // Fallback defensivo si las columnas team_code o subline todavía no se han agregado en Supabase
+        if (error && (error.message.includes('team_code') || error.message.includes('subline') || error.code === '42703')) {
+          console.warn('Columnas extendidas (team_code/subline) no encontradas en Supabase, reintentando inserción con campos base...');
+          const fallbackBatch = batch.map(({ team_code, subline, ...rest }: any) => rest);
           const fallbackRes = await supabase.from('sales_records').insert(fallbackBatch);
           error = fallbackRes.error;
         }

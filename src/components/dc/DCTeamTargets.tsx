@@ -110,8 +110,18 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
           setDcPersonalQuotas({} as any);
         }
 
-        // Filtrar estrictamente solo comerciales asignados al grupo activo
+        // Filtrar comerciales asignados al grupo activo
         const commercials = all.filter(u => u.role === 'comercial' && u.group_id === targetGroupId);
+
+        // Incluir a Televenta como comercial multi-equipo para ambos equipos
+        const televentaUser = all.find(u => 
+          (u.seller_code || u.vendor_code || '').trim().toUpperCase() === 'TELEVENTA' ||
+          (u.email || '').toLowerCase().includes('televenta')
+        );
+        if (televentaUser && !commercials.some(c => c.id === televentaUser.id)) {
+          commercials.push(televentaUser);
+        }
+
         setTeamMembers(commercials);
 
         const qMap: Record<string, Record<BusinessLineId, number>> = {};
@@ -133,6 +143,8 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
           const isMember = allMemberIds.includes(sale.commercial_id || sale.user_id || '');
           if (!isMember) return false;
 
+          const isTeleventaSale = televentaUser && (sale.commercial_id === televentaUser.id || sale.user_id === televentaUser.id);
+
           // Si la venta tiene team_code, debe pertenecer al equipo de este Director Comercial
           if (sale.team_code) {
             const saleTeam = sale.team_code.trim().toUpperCase();
@@ -140,7 +152,12 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
             const isNameMatch = groupName && (saleTeam === groupName || saleTeam.includes(groupName) || groupName.includes(saleTeam));
             const isDcNameMatch = dcFullName && (saleTeam.includes(dcFullName) || dcFullName.includes(saleTeam));
             const isGroupIdMatch = sale.team_code === targetGroupId;
-            return isCodeMatch || isNameMatch || isDcNameMatch || isGroupIdMatch;
+            return Boolean(isCodeMatch || isNameMatch || isDcNameMatch || isGroupIdMatch);
+          }
+
+          // Si es venta de Televenta pero NO trae team_code, no se consolida automáticamente para evitar solapamientos
+          if (isTeleventaSale) {
+            return false;
           }
 
           // Si la venta no trae team_code (por compatibilidad previa), se consolida por comercial asignado
@@ -268,16 +285,38 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
   const diagnosticSales = diagnosticTargetUser ? groupSales.filter(s => (s.commercial_id || s.user_id) === diagnosticTargetUser.id) : [];
 
   const lineDiagnostics = BUSINESS_LINES.map(line => {
+    const isInformative = line.hasTarget === false;
     const target = diagnosticQuotas[line.id] || 0;
     const actual = line.isCurrency
       ? diagnosticSales.filter(s => s.line_id === line.id).reduce((sum, s) => sum + (Number(s.amount) || 0), 0)
       : diagnosticSales.filter(s => s.line_id === line.id && s.is_new_client).length;
     
-    const remaining = Math.max(0, target - actual);
-    const percentage = target > 0 ? (actual / target) * 100 : (actual > 0 ? 100 : 0);
+    let moInActual = 0;
+    let bolActual = 0;
+    let moInShareOfActual = 0;
+    let moInTarget80 = 0;
+    let moInThresholdMet = false;
 
-    let status: 'critical' | 'progress' | 'achieved' = 'critical';
-    if (percentage >= 100) {
+    if (line.id === 'MI') {
+      const miSales = diagnosticSales.filter(s => s.line_id === 'MI');
+      moInActual = miSales
+        .filter(s => s.subline === 'MO-IN' || (!s.subline && s.subline !== 'BOL'))
+        .reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+      bolActual = miSales
+        .filter(s => s.subline === 'BOL' || s.raw_data?.['Concepto Presupuesto']?.includes('BOL'))
+        .reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+      moInShareOfActual = actual > 0 ? (moInActual / actual) * 100 : 0;
+      moInTarget80 = target * 0.8;
+      moInThresholdMet = target > 0 ? moInActual >= moInTarget80 : true;
+    }
+
+    const remaining = isInformative ? 0 : Math.max(0, target - actual);
+    const percentage = isInformative ? 100 : (target > 0 ? (actual / target) * 100 : (actual > 0 ? 100 : 0));
+
+    let status: 'critical' | 'progress' | 'achieved' | 'informative' = 'critical';
+    if (isInformative) {
+      status = 'informative';
+    } else if (percentage >= 100) {
       status = 'achieved';
     } else if (percentage >= 70) {
       status = 'progress';
@@ -285,20 +324,26 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
 
     return {
       line,
+      isInformative,
       target,
       actual,
       remaining,
       percentage,
       status,
+      moInActual,
+      bolActual,
+      moInShareOfActual,
+      moInTarget80,
+      moInThresholdMet,
     };
   });
 
-  const linesUnder50 = lineDiagnostics.filter(l => l.target > 0 && l.percentage < 50);
+  const linesUnder50 = lineDiagnostics.filter(l => !l.isInformative && l.target > 0 && l.percentage < 50);
   const criticalCount = lineDiagnostics.filter(l => l.status === 'critical').length;
   const progressCount = lineDiagnostics.filter(l => l.status === 'progress').length;
   const achievedCount = lineDiagnostics.filter(l => l.status === 'achieved').length;
 
-  const totalDiagnosticTarget = BUSINESS_LINES.filter(b => b.isCurrency).reduce((sum, b) => sum + (diagnosticQuotas[b.id] || 0), 0);
+  const totalDiagnosticTarget = BUSINESS_LINES.filter(b => b.isCurrency && b.hasTarget !== false).reduce((sum, b) => sum + (diagnosticQuotas[b.id] || 0), 0);
   const totalDiagnosticActual = diagnosticSales.reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
   const totalDiagnosticRemaining = Math.max(0, totalDiagnosticTarget - totalDiagnosticActual);
   const totalDiagnosticPct = totalDiagnosticTarget > 0 ? (totalDiagnosticActual / totalDiagnosticTarget) * 100 : 0;
@@ -529,18 +574,28 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
                 teamMembers.map(member => {
                   const q = teamQuotas[member.id] || {};
                   const totalComm = BUSINESS_LINES
-                    .filter(b => b.isCurrency)
+                    .filter(b => b.isCurrency && b.hasTarget !== false)
                     .reduce((sum, b) => sum + (q[b.id] || 0), 0);
+                  const isTeleventa = (member.seller_code || member.vendor_code || '').trim().toUpperCase() === 'TELEVENTA';
 
                   return (
                     <tr key={member.id} className="hover:bg-slate-50/80">
                       <td className="p-3.5">
-                        <div className="font-bold text-slate-900">{member.name}</div>
-                        <div className="text-[11px] text-slate-400">{member.email}</div>
+                        <div className="flex items-center gap-2">
+                          {isTeleventa && (
+                            <span className="text-[9px] bg-blue-100 text-blue-800 font-black px-1.5 py-0.5 rounded uppercase">
+                              Multi-Equipo
+                            </span>
+                          )}
+                          <div>
+                            <div className="font-bold text-slate-900">{member.name || member.full_name}</div>
+                            <div className="text-[11px] text-slate-400">{member.email}</div>
+                          </div>
+                        </div>
                       </td>
                       <td className="p-3.5">
                         <span className="bg-blue-50 text-blue-700 font-mono font-bold px-2 py-0.5 rounded">
-                          {member.vendor_code}
+                          {member.seller_code || member.vendor_code}
                         </span>
                       </td>
                       <td className="p-3.5">{(q['OFI'] || 0).toLocaleString('es-ES')} €</td>
@@ -758,10 +813,13 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
                 <tbody className="divide-y divide-slate-100 font-medium text-slate-600">
                   {lineDiagnostics.map(item => {
                     const isCurrency = item.line.isCurrency;
+                    const isInformative = item.isInformative;
+
                     return (
                       <tr 
                         key={item.line.id} 
                         className={`transition-colors ${
+                          isInformative ? 'hover:bg-blue-50/20 bg-white' :
                           item.status === 'critical' ? 'hover:bg-rose-50/40 bg-white' : 
                           item.status === 'progress' ? 'hover:bg-amber-50/40 bg-white' : 
                           'hover:bg-emerald-50/40 bg-emerald-50/10'
@@ -769,21 +827,44 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
                       >
                         <td className="p-3.5">
                           <div className="flex items-center gap-2">
-                            <span className="w-2.5 h-2.5 rounded-full bg-solitium-500 shrink-0"></span>
+                            <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${isInformative ? 'bg-blue-400' : 'bg-solitium-500'}`}></span>
                             <div>
                               <div className="font-bold text-slate-900 flex items-center gap-1.5">
                                 <span>{item.line.name}</span>
                                 <span className="font-mono text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded">
                                   {item.line.shortName}
                                 </span>
+                                {isInformative && (
+                                  <span className="text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.2 rounded font-bold">
+                                    Informativa
+                                  </span>
+                                )}
                               </div>
                               <div className="text-[10px] text-slate-400">{item.line.group}</div>
+                              {/* Desglose para Mantenimiento MI */}
+                              {item.line.id === 'MI' && (
+                                <div className="mt-1 text-[10px] font-medium text-slate-600 flex items-center gap-2 flex-wrap">
+                                  <span className="text-purple-700 font-semibold">
+                                    Core MO-IN: {(item.moInActual || 0).toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
+                                  </span>
+                                  <span>&bull;</span>
+                                  <span className="text-slate-500">
+                                    BOL: {(item.bolActual || 0).toLocaleString('es-ES', { minimumFractionDigits: 2 })} €
+                                  </span>
+                                  <span>&bull;</span>
+                                  <span className={(item.moInActual || 0) >= (item.moInTarget80 || 0) ? 'text-emerald-700 font-bold' : 'text-amber-700 font-bold'}>
+                                    {(item.moInActual || 0) >= (item.moInTarget80 || 0) ? '✅ Umbral 80% Core OK' : `⚠️ Falta 80% core (${(item.moInTarget80 || 0).toLocaleString('es-ES')} €)`}
+                                  </span>
+                                </div>
+                              )}
                             </div>
                           </div>
                         </td>
 
                         <td className="p-3.5 text-right font-semibold text-slate-700">
-                          {isCurrency
+                          {isInformative ? (
+                            <span className="text-slate-400 text-[11px] italic">Sin cuota</span>
+                          ) : isCurrency
                             ? `${item.target.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €`
                             : `${item.target} Clientes`}
                         </td>
@@ -795,7 +876,9 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
                         </td>
 
                         <td className="p-3.5 text-right font-medium">
-                          {item.remaining > 0 ? (
+                          {isInformative ? (
+                            <span className="text-slate-400 text-[11px]">—</span>
+                          ) : item.remaining > 0 ? (
                             <span className="text-slate-600">
                               {isCurrency
                                 ? `${item.remaining.toLocaleString('es-ES', { minimumFractionDigits: 2 })} €`
@@ -807,30 +890,42 @@ export const DCTeamTargets: React.FC<DCTeamTargetsProps> = ({
                         </td>
 
                         <td className="p-3.5">
-                          <div className="w-28 mx-auto space-y-1">
-                            <div className="flex justify-between text-[11px] font-bold">
-                              <span className={
-                                item.status === 'critical' ? 'text-rose-600' :
-                                item.status === 'progress' ? 'text-amber-600' :
-                                'text-emerald-600'
-                              }>
-                                {item.percentage.toFixed(1)}%
-                              </span>
+                          {isInformative ? (
+                            <div className="text-center text-[11px] font-bold text-blue-600">
+                              Real Informativo
                             </div>
-                            <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
-                              <div 
-                                className={`h-1.5 rounded-full ${
-                                  item.status === 'critical' ? 'bg-rose-500' :
-                                  item.status === 'progress' ? 'bg-amber-500' :
-                                  'bg-emerald-500'
-                                }`}
-                                style={{ width: `${Math.min(100, item.percentage)}%` }}
-                              ></div>
+                          ) : (
+                            <div className="w-28 mx-auto space-y-1">
+                              <div className="flex justify-between text-[11px] font-bold">
+                                <span className={
+                                  item.status === 'critical' ? 'text-rose-600' :
+                                  item.status === 'progress' ? 'text-amber-600' :
+                                  'text-emerald-600'
+                                }>
+                                  {item.percentage.toFixed(1)}%
+                                </span>
+                              </div>
+                              <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                                <div 
+                                  className={`h-1.5 rounded-full ${
+                                    item.status === 'critical' ? 'bg-rose-500' :
+                                    item.status === 'progress' ? 'bg-amber-500' :
+                                    'bg-emerald-500'
+                                  }`}
+                                  style={{ width: `${Math.min(100, item.percentage)}%` }}
+                                ></div>
+                              </div>
                             </div>
-                          </div>
+                          )}
                         </td>
 
                         <td className="p-3.5 text-center">
+                          {isInformative && (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-blue-100 text-blue-800 border border-blue-200 shadow-2xs">
+                              <span>ℹ️</span>
+                              <span>Informativa</span>
+                            </span>
+                          )}
                           {item.status === 'critical' && (
                             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-rose-100 text-rose-800 border border-rose-200 shadow-2xs">
                               <span>🔴</span>

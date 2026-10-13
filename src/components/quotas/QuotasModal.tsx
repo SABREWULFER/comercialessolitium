@@ -82,8 +82,8 @@ export const QuotasModal: React.FC<QuotasModalProps> = ({
     }
   };
 
-  // Cálculo de totales dinámicos en el modal
-  const totalAmount = BUSINESS_LINES
+  const targetLines = BUSINESS_LINES.filter(b => b.hasTarget !== false);
+  const totalAmount = targetLines
     .filter(b => b.isCurrency)
     .reduce((acc, curr) => acc + (quotas[curr.id] || 0), 0);
 
@@ -133,7 +133,7 @@ export const QuotasModal: React.FC<QuotasModalProps> = ({
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {BUSINESS_LINES.map(line => (
+              {targetLines.map(line => (
                 <div 
                   key={line.id}
                   className="p-4 bg-slate-50 hover:bg-slate-100/70 rounded-xl border border-slate-200 transition-colors"

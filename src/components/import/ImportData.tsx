@@ -193,6 +193,7 @@ export const ImportData: React.FC<ImportDataProps> = ({
         // En Excel, la columna 9 (base 1) corresponde al índice 8 (base 0)
         teamColIdx = 8;
       }
+      const conceptPresupuestoColIdx = findColIdx(['concepto presupuesto', 'concepto de presupuesto', 'concepto_presupuesto', 'presupuesto concepto']);
       const club100ColIdx = findColIdx(['club 100%']);
       const lineCodeColIdx = findColIdx(['linea código', 'linea codigo', 'código línea', 'codigo linea']);
       const genericLineColIdx = findColIdx(['línea', 'linea', 'tipo producto']);
@@ -220,11 +221,14 @@ export const ImportData: React.FC<ImportDataProps> = ({
           return;
         }
 
-        // Mapear por seller_code en profiles. Si no coincide, asignar commercial_id = null (no omitir ni abortar)
-        const matchedUser = rawVendor ? sellerCodeMap.get(rawVendor) : undefined;
+        // Mapear por seller_code en profiles. Soporte especial para Televenta
+        let matchedUser = rawVendor ? sellerCodeMap.get(rawVendor) : undefined;
+        if (!matchedUser && rawVendor.includes('TELEVENTA')) {
+          matchedUser = profiles.find(p => (p.seller_code || p.vendor_code || '').toUpperCase().includes('TELEVENTA'));
+        }
         const commercialId = matchedUser ? matchedUser.id : null;
 
-        // Extraer EQUIPO COMERCIAL
+        // Extraer EQUIPO COMERCIAL (Columna 9)
         const rawTeam = teamColIdx !== -1 ? String(row[teamColIdx] || '').trim().toUpperCase() : '';
         const teamCode = rawTeam || null;
 
@@ -233,10 +237,24 @@ export const ImportData: React.FC<ImportDataProps> = ({
           unmappedVendors.add(rawVendor);
         }
 
+        // 1. Mapeo estricto por 'Concepto Presupuesto' (o 'Club 100%')
+        const rawConceptPresupuesto = conceptPresupuestoColIdx !== -1 ? String(row[conceptPresupuestoColIdx] || '').trim() : '';
         const rawClub100 = club100ColIdx !== -1 ? String(row[club100ColIdx] || '').trim() : '';
         const rawLineCode = lineCodeColIdx !== -1 ? String(row[lineCodeColIdx] || '').trim() : '';
         const rawGenericLine = genericLineColIdx !== -1 ? String(row[genericLineColIdx] || '').trim() : '';
-        const mappedLineId = mapRawLineToId(rawClub100 || rawGenericLine, rawLineCode);
+        const rawConcept = conceptColIdx !== -1 ? String(row[conceptColIdx] || '').trim() : '';
+
+        const effectiveConcept = rawConceptPresupuesto || rawClub100 || rawConcept;
+        const mappedLineId = mapRawLineToId(effectiveConcept, rawClub100 || rawGenericLine, rawLineCode);
+
+        // Identificar si la sublínea es 'MO-IN' o 'BOL' para la pata core de mantenimiento (umbral 80%)
+        let subline: string | null = null;
+        const upperConcept = effectiveConcept.toUpperCase();
+        if (upperConcept.includes('MO-IN')) {
+          subline = 'MO-IN';
+        } else if (upperConcept.includes('BOL')) {
+          subline = 'BOL';
+        }
 
         const rawClientType = clientTypeColIdx !== -1 ? String(row[clientTypeColIdx] || '').toLowerCase() : '';
         const isNewClient = rawClientType.includes('prospecto') || rawClientType.includes('nuevo');
@@ -246,16 +264,16 @@ export const ImportData: React.FC<ImportDataProps> = ({
         const invoiceNumber = rawDoc || `DOC-${index + 1}`;
         const saleDate = dateColIdx !== -1 ? parseExcelDate(row[dateColIdx]) : new Date().toISOString().split('T')[0];
 
-        const conceptStr = conceptColIdx !== -1 ? String(row[conceptColIdx] || '').toLowerCase() : '';
-        const isManagedService = conceptStr.includes('servicio gestionado') || 
-                                 conceptStr.includes('conectividad') || 
-                                 conceptStr.includes('mantenimiento') ||
+        const isManagedService = effectiveConcept.toLowerCase().includes('servicio gestionado') || 
+                                 effectiveConcept.toLowerCase().includes('conectividad') || 
+                                 effectiveConcept.toLowerCase().includes('mantenimiento') ||
                                  mappedLineId === 'MI' || 
                                  mappedLineId === 'SW';
 
         validSalesRecords.push({
           commercial_id: commercialId,
           team_code: teamCode,
+          subline: subline,
           line_id: mappedLineId,
           fiscal_year: fiscalYear || '2026-2027',
           amount: rawAmount,
@@ -317,6 +335,7 @@ export const ImportData: React.FC<ImportDataProps> = ({
       const jvillagrasa = profiles.find(p => (p.seller_code || p.vendor_code || '').toUpperCase() === 'JVILLAGRASA') || profiles[1] || profiles[0];
       const lmartinez = profiles.find(p => (p.seller_code || p.vendor_code || '').toUpperCase() === 'LMARTINEZ') || profiles[2] || profiles[0];
       const laloras = profiles.find(p => (p.seller_code || p.vendor_code || '').toUpperCase().includes('LORAS') || p.role === 'director_comercial') || profiles[0];
+      const televenta = profiles.find(p => (p.seller_code || p.vendor_code || '').toUpperCase().includes('TELEVENTA')) || profiles[0];
 
       const lalorasCode = laloras.seller_code || laloras.vendor_code || 'LALORAS';
 
@@ -325,16 +344,22 @@ export const ImportData: React.FC<ImportDataProps> = ({
         { commercial_id: alapieza.id, team_code: lalorasCode, line_id: 'OFI', fiscal_year: fiscalYear, amount: 18500, discount_rate: 0, is_managed_service: false, is_new_client: false, is_financed: true, invoice_number: 'FC26-0891', sale_date: '2026-09-04' },
         { commercial_id: alapieza.id, team_code: lalorasCode, line_id: 'MICRO', fiscal_year: fiscalYear, amount: 9200, discount_rate: 0, is_managed_service: false, is_new_client: true, is_financed: false, invoice_number: 'FC26-0899', sale_date: '2026-09-08' },
         { commercial_id: alapieza.id, team_code: lalorasCode, line_id: 'SISTEMAS', fiscal_year: fiscalYear, amount: 14500, discount_rate: 0, is_managed_service: false, is_new_client: false, is_financed: true, invoice_number: 'FC26-0912', sale_date: '2026-09-12' },
-        { commercial_id: alapieza.id, team_code: lalorasCode, line_id: 'MI', fiscal_year: fiscalYear, amount: 5600, discount_rate: 0, is_managed_service: true, is_new_client: false, is_financed: false, invoice_number: 'FC26-0925', sale_date: '2026-09-15' },
+        // Pata Core de Mantenimiento: MO-IN (80% umbral core) + BOL
+        { commercial_id: alapieza.id, team_code: lalorasCode, subline: 'MO-IN', line_id: 'MI', fiscal_year: fiscalYear, amount: 8000, discount_rate: 0, is_managed_service: true, is_new_client: false, is_financed: false, invoice_number: 'FC26-0925', sale_date: '2026-09-15' },
+        { commercial_id: alapieza.id, team_code: lalorasCode, subline: 'BOL', line_id: 'MI', fiscal_year: fiscalYear, amount: 1500, discount_rate: 0, is_managed_service: true, is_new_client: false, is_financed: false, invoice_number: 'FC26-0926', sale_date: '2026-09-15' },
         { commercial_id: alapieza.id, team_code: lalorasCode, line_id: 'SW', fiscal_year: fiscalYear, amount: 4800, discount_rate: 0, is_managed_service: true, is_new_client: true, is_financed: false, invoice_number: 'FC26-0940', sale_date: '2026-09-18' },
         { commercial_id: alapieza.id, team_code: lalorasCode, line_id: 'DW', fiscal_year: fiscalYear, amount: 12000, discount_rate: 0, is_managed_service: true, is_new_client: true, is_financed: false, invoice_number: 'FC26-0966', sale_date: '2026-09-22' },
         { commercial_id: alapieza.id, team_code: lalorasCode, line_id: 'SAGE_CLIENTS', fiscal_year: fiscalYear, amount: 0, discount_rate: 0, is_managed_service: false, is_new_client: true, is_financed: false, invoice_number: 'SAGE-01', sale_date: '2026-09-28' },
+        // Patas Informativas sin objetivo
+        { commercial_id: alapieza.id, team_code: lalorasCode, line_id: 'F-SERVICIOS', fiscal_year: fiscalYear, amount: 2800, discount_rate: 0, is_managed_service: false, is_new_client: false, is_financed: false, invoice_number: 'FC26-0935', sale_date: '2026-09-17' },
+        { commercial_id: alapieza.id, team_code: lalorasCode, line_id: 'VARIOS', fiscal_year: fiscalYear, amount: 1200, discount_rate: 0, is_managed_service: false, is_new_client: false, is_financed: false, invoice_number: 'FC26-0936', sale_date: '2026-09-17' },
 
         // Ventas de JVILLAGRASA (Equipo LALORAS)
         { commercial_id: jvillagrasa.id, team_code: lalorasCode, line_id: 'OFI', fiscal_year: fiscalYear, amount: 22000, discount_rate: 0, is_managed_service: false, is_new_client: true, is_financed: true, invoice_number: 'FC26-0894', sale_date: '2026-09-05' },
         { commercial_id: jvillagrasa.id, team_code: lalorasCode, line_id: 'PP', fiscal_year: fiscalYear, amount: 31000, discount_rate: 0, is_managed_service: false, is_new_client: false, is_financed: true, invoice_number: 'FC26-0905', sale_date: '2026-09-11' },
         { commercial_id: jvillagrasa.id, team_code: lalorasCode, line_id: 'GF', fiscal_year: fiscalYear, amount: 14000, discount_rate: 0, is_managed_service: false, is_new_client: false, is_financed: true, invoice_number: 'FC26-0920', sale_date: '2026-09-14' },
         { commercial_id: jvillagrasa.id, team_code: lalorasCode, line_id: '3D', fiscal_year: fiscalYear, amount: 8500, discount_rate: 0, is_managed_service: false, is_new_client: true, is_financed: false, invoice_number: 'FC26-0948', sale_date: '2026-09-19' },
+        { commercial_id: jvillagrasa.id, team_code: lalorasCode, subline: 'MO-IN', line_id: 'MI', fiscal_year: fiscalYear, amount: 6500, discount_rate: 0, is_managed_service: true, is_new_client: false, is_financed: false, invoice_number: 'FC26-0950', sale_date: '2026-09-20' },
 
         // Ventas de LMARTINEZ (Equipo LALORAS)
         { commercial_id: lmartinez.id, team_code: lalorasCode, line_id: 'OFI', fiscal_year: fiscalYear, amount: 16500, discount_rate: 0, is_managed_service: false, is_new_client: false, is_financed: false, invoice_number: 'FC26-0901', sale_date: '2026-09-07' },
@@ -345,6 +370,14 @@ export const ImportData: React.FC<ImportDataProps> = ({
         // Ventas Directas del Director Comercial (LALORAS)
         { commercial_id: laloras.id, team_code: lalorasCode, line_id: 'OFI', fiscal_year: fiscalYear, amount: 25000, discount_rate: 0, is_managed_service: false, is_new_client: false, is_financed: true, invoice_number: 'FC26-0970', sale_date: '2026-09-23' },
         { commercial_id: laloras.id, team_code: lalorasCode, line_id: 'DW', fiscal_year: fiscalYear, amount: 18000, discount_rate: 0, is_managed_service: true, is_new_client: true, is_financed: false, invoice_number: 'FC26-0985', sale_date: '2026-09-26' },
+
+        // Ventas Multi-Equipo de TELEVENTA:
+        // Facturación para LALORAS (solo sumará a Luis Loras)
+        { commercial_id: televenta.id, team_code: 'LALORAS', line_id: 'OFI', fiscal_year: fiscalYear, amount: 12500, discount_rate: 0, is_managed_service: false, is_new_client: true, is_financed: true, invoice_number: 'TEL-LL-01', sale_date: '2026-09-10' },
+        { commercial_id: televenta.id, team_code: 'LALORAS', line_id: 'SW', fiscal_year: fiscalYear, amount: 3500, discount_rate: 0, is_managed_service: true, is_new_client: false, is_financed: false, invoice_number: 'TEL-LL-02', sale_date: '2026-09-14' },
+        // Facturación para MREQUENA (solo sumará a Moisés Requena)
+        { commercial_id: televenta.id, team_code: 'MREQUENA', line_id: 'OFI', fiscal_year: fiscalYear, amount: 15200, discount_rate: 0, is_managed_service: false, is_new_client: true, is_financed: true, invoice_number: 'TEL-MR-01', sale_date: '2026-09-12' },
+        { commercial_id: televenta.id, team_code: 'MREQUENA', line_id: 'MICRO', fiscal_year: fiscalYear, amount: 6800, discount_rate: 0, is_managed_service: false, is_new_client: false, is_financed: false, invoice_number: 'TEL-MR-02', sale_date: '2026-09-18' },
       ];
 
       setRecords(sampleSeptiembre);

@@ -20,66 +20,78 @@ import {
  * - 'Audiovisuales' -> AV
  * - 'SAGE' -> SAGE_CLIENTS
  */
-export function mapRawLineToId(rawLine?: string, rawCode?: string): BusinessLineId {
+export function mapRawLineToId(rawConcept?: string, rawLine?: string, rawCode?: string): BusinessLineId {
+  const conc = (rawConcept || '').toString().toUpperCase().trim();
   const c100 = (rawLine || '').toString().toUpperCase().trim();
   const code = (rawCode || '').toString().toUpperCase().trim();
-  const combined = `${c100} ${code}`.trim();
+  const combined = `${conc} ${c100} ${code}`.trim();
 
   if (!combined) return 'OFI';
 
-  // SAGE
-  if (combined.includes('SAGE')) return 'SAGE_CLIENTS';
-
-  // Docuware -> DW
-  if (combined.includes('DOCUWARE') || combined.includes('DOCU') || c100 === 'DW' || code === 'DW') {
-    return 'DW';
-  }
-
-  // OFI Produccion -> PP vs OFI Oficina -> OFI
-  if (combined.includes('OFI PRODUCCION') || combined.includes('OFI PRODUCCIÓN') || combined.includes('PRODUCCION') || combined.includes('PRODUCCIÓN') || c100 === 'PP' || code === 'PP') {
-    return 'PP';
-  }
-  if (combined.includes('OFI OFICINA') || combined.includes('OFICINA') || c100 === 'OFI' || code === 'OFI' || combined.includes('IMPRESION')) {
+  // 1. OFIMATICA-Cliente y OFIMATICA-Prospecto -> 'OFI'
+  if (conc.includes('OFIMATICA-CLIENTE') || conc.includes('OFIMATICA-PROSPECTO') || conc.includes('OFIMATICA') || combined.includes('OFIMATICA')) {
     return 'OFI';
   }
 
-  // INF+SW -> MICRO o SW
-  if (combined.includes('INF+SW') || combined.includes('INF + SW') || combined.includes('INFORMATICA') || combined.includes('INFORMÁTICA')) {
-    if (combined.includes('SW') || combined.includes('SOFTWARE') || combined.includes('SUSCRIP') || combined.includes('LICENCIA')) {
-      return 'SW';
-    }
-    return 'MICRO';
+  // 2. PRODUCCION -> 'PP'
+  if (conc.includes('PRODUCCION') || conc.includes('PRODUCCIÓN') || combined.includes('PRODUCCION') || combined.includes('PRODUCCIÓN')) {
+    return 'PP';
   }
-  if (combined.includes('SUSCRIPCION') || combined.includes('SUSCRIPCIÓN') || c100 === 'SW' || code === 'SW' || combined.includes('SOFTWARE')) {
-    return 'SW';
+
+  // 3. LATEX y DESINGJET (o DJET) -> 'GF' (Gran Formato)
+  if (conc.includes('LATEX') || conc.includes('DESINGJET') || conc.includes('DESIGNJET') || conc.includes('DJET') || 
+      combined.includes('LATEX') || combined.includes('DESINGJET') || combined.includes('DESIGNJET') || combined.includes('DJET')) {
+    return 'GF';
   }
-  if (combined.includes('MICRO') || c100 === 'MICRO' || code === 'MICRO') {
+
+  // 4. Micro + SW Resto -> 'MICRO'
+  if (conc.includes('MICRO + SW RESTO') || conc.includes('MICRO+SW RESTO') || conc.includes('MICRO + SW') || conc.includes('MICRO') || 
+      combined.includes('MICRO + SW RESTO') || combined.includes('MICRO+SW RESTO')) {
     return 'MICRO';
   }
 
-  // Sistemas -> SISTEMAS
-  if (combined.includes('SISTEMA') || combined.includes('SISTEMAS') || c100 === 'SISTEMAS' || code === 'SISTEMAS') {
+  // 5. Sistemas+SW TS -> 'SISTEMAS'
+  if (conc.includes('SISTEMAS+SW TS') || conc.includes('SISTEMAS + SW TS') || conc.includes('SISTEMAS+SW') || conc.includes('SISTEMAS') || 
+      combined.includes('SISTEMAS+SW TS')) {
     return 'SISTEMAS';
   }
 
-  // MI -> MI (Mantenimiento Solitium)
-  if (combined.includes('MANTENIMIENTO') || c100 === 'MI' || code === 'MI' || combined.includes('MANT.')) {
+  // 6. SW-SUSCRIP -> 'SW'
+  if (conc.includes('SW-SUSCRIP') || conc.includes('SW - SUSCRIP') || conc.includes('SUSCRIP') || conc.includes('SOFTWARE') || 
+      combined.includes('SW-SUSCRIP')) {
+    return 'SW';
+  }
+
+  // 7. DOCUWARE -> 'DW'
+  if (conc.includes('DOCUWARE') || conc.includes('DOCU') || combined.includes('DOCUWARE')) {
+    return 'DW';
+  }
+
+  // 8. MO-IN y BOL -> 'MI' (Mantenimiento Solitium)
+  if (conc === 'MO-IN' || conc.startsWith('MO-IN') || conc.includes('MO-IN') || 
+      conc === 'BOL' || conc.startsWith('BOL') || conc.includes('BOL') || 
+      combined.includes('MO-IN') || combined.includes('BOL')) {
     return 'MI';
   }
 
-  // Especialidades: Gran Formato (GF), 3D Desktop (3D), Audiovisuales (AV)
-  if (combined.includes('GRAN FORMATO') || c100 === 'GF' || code === 'GF' || combined.includes('PLOTTER')) {
-    return 'GF';
-  }
-  if (combined.includes('3D') || c100 === '3D' || code === '3D') {
-    return '3D';
-  }
-  if (combined.includes('AUDIOVISUAL') || combined.includes('AV') || c100 === 'AV' || code === 'AV') {
-    return 'AV';
+  // 9. F-SERVICIOS -> 'F-SERVICIOS' (Fuera de Servicios)
+  if (conc.includes('F-SERVICIOS') || conc.includes('F_SERVICIOS') || conc.includes('FUERA DE SERVICIOS') || combined.includes('F-SERVICIOS')) {
+    return 'F-SERVICIOS';
   }
 
-  // Coincidencia directa por id en BusinessLineConfig
-  const directMatch = BUSINESS_LINES.find(b => b.id === c100 || b.id === code);
+  // 10. VARIOS -> 'VARIOS'
+  if (conc.includes('VARIOS') || combined.includes('VARIOS')) {
+    return 'VARIOS';
+  }
+
+  // Fallbacks de compatibilidad
+  if (combined.includes('SAGE')) return 'SAGE_CLIENTS';
+  if (combined.includes('3D')) return '3D';
+  if (combined.includes('AV') || combined.includes('AUDIOVISUAL')) return 'AV';
+  if (combined.includes('GRAN FORMATO') || combined.includes('PLOTTER')) return 'GF';
+  if (combined.includes('MANTENIMIENTO') || c100 === 'MI' || code === 'MI') return 'MI';
+
+  const directMatch = BUSINESS_LINES.find(b => b.id === c100 || b.id === code || b.id === conc);
   if (directMatch) return directMatch.id;
 
   return 'OFI';
@@ -94,6 +106,9 @@ export function calculateQuotaProgress(
 ): QuotaProgress[] {
   // Acumular ventas por línea
   const actuals: Record<BusinessLineId, number> = {} as any;
+  let moInActual = 0;
+  let bolActual = 0;
+
   BUSINESS_LINES.forEach(b => {
     actuals[b.id] = 0;
   });
@@ -101,21 +116,48 @@ export function calculateQuotaProgress(
   sales.forEach(sale => {
     const lineId = sale.line_id;
     if (lineId === 'SAGE_CLIENTS') {
-      // Para clientes nuevos SAGE se cuenta la cantidad de clientes
       if (sale.is_new_client) {
         actuals['SAGE_CLIENTS'] = (actuals['SAGE_CLIENTS'] || 0) + 1;
       }
     } else if (actuals[lineId] !== undefined) {
       actuals[lineId] = (actuals[lineId] || 0) + (Number(sale.amount) || 0);
     }
+
+    // Subdivisión de Mantenimiento Solitium (MI) entre MO-IN (core) y BOL
+    if (lineId === 'MI') {
+      const sub = (sale.subline || '').toUpperCase();
+      const conc = (sale.raw_data?.concept || '').toString().toUpperCase();
+      if (sub === 'MO-IN' || conc.includes('MO-IN')) {
+        moInActual += Number(sale.amount) || 0;
+      } else if (sub === 'BOL' || conc.includes('BOL')) {
+        bolActual += Number(sale.amount) || 0;
+      } else {
+        moInActual += Number(sale.amount) || 0;
+      }
+    }
   });
 
   return BUSINESS_LINES.map(line => {
-    const target = quotas[line.id] || 0;
+    const isInformative = line.hasTarget === false;
+    const target = isInformative ? 0 : (quotas[line.id] || 0);
     const actual = actuals[line.id] || 0;
-    const remaining = Math.max(0, target - actual);
-    const percentage = target > 0 ? (actual / target) * 100 : 0;
-    const isCompleted = target > 0 && actual >= target;
+    const remaining = isInformative ? 0 : Math.max(0, target - actual);
+    const percentage = target > 0 ? (actual / target) * 100 : (isInformative && actual > 0 ? 100 : 0);
+    const isCompleted = isInformative ? true : (target > 0 && actual >= target);
+
+    let miExtras: Partial<QuotaProgress> = {};
+    if (line.id === 'MI') {
+      const moInTarget80 = target * 0.8;
+      const moInShareOfActual = actual > 0 ? (moInActual / actual) * 100 : 0;
+      const moInTargetAchievement = moInTarget80 > 0 ? (moInActual / moInTarget80) * 100 : (moInActual > 0 ? 100 : 0);
+      miExtras = {
+        moInActual,
+        bolActual,
+        moInShareOfActual,
+        moInTarget80,
+        moInTargetAchievement,
+      };
+    }
 
     return {
       line,
@@ -124,6 +166,7 @@ export function calculateQuotaProgress(
       remaining,
       percentage,
       isCompleted,
+      ...miExtras,
     };
   });
 }
@@ -140,8 +183,8 @@ export function calculateAccelerators(
   remainingToGlobal: number;
   tiers: AcceleratorTier[];
 } {
-  // Excluimos las líneas no monetarias para el cálculo global de facturación
-  const currencyLines = progressList.filter(p => p.line.isCurrency);
+  // Excluimos las líneas no monetarias y las informativas sin cuota
+  const currencyLines = progressList.filter(p => p.line.isCurrency && p.line.hasTarget !== false);
   const totalTarget = currencyLines.reduce((acc, curr) => acc + curr.target, 0);
   const totalActual = currencyLines.reduce((acc, curr) => acc + curr.actual, 0);
   const overallPercentage = totalTarget > 0 ? (totalActual / totalTarget) * 100 : 0;

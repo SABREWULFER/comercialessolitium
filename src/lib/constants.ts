@@ -87,6 +87,17 @@ export const DEMO_USERS: CommercialUser[] = [
     group_id: DEFAULT_COMMERCIAL_GROUPS[2].id,
     is_active: true,
   },
+  {
+    id: 't0000000-0000-0000-0000-000000000099',
+    full_name: 'Televenta Solitium (Multi-Equipo)',
+    name: 'Televenta Solitium',
+    seller_code: 'TELEVENTA',
+    vendor_code: 'TELEVENTA',
+    email: 'televenta@solitium.es',
+    role: 'comercial',
+    group_id: null, // Asignación dinámica multi-equipo según EQUIPO COMERCIAL
+    is_active: true,
+  },
 ];
 
 export const INITIAL_GROUP_TARGET: GroupTarget = {
